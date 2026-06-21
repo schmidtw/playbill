@@ -1,0 +1,25 @@
+# Binaries
+/playbill
+/dist/
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+go.work
+go.work.sum
+
+# Coverage
+coverage.txt
+*.coverprofile
+
+# Env / secrets
+.env
+*.local
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
