@@ -14,6 +14,7 @@ import (
 	"github.com/schmidtw/playbill/internal/library"
 	"github.com/schmidtw/playbill/internal/nameparse"
 	"github.com/schmidtw/playbill/internal/nfo"
+	"github.com/schmidtw/playbill/internal/probe"
 	"github.com/schmidtw/playbill/internal/report"
 	"github.com/schmidtw/playbill/internal/writer"
 )
@@ -96,7 +97,8 @@ func processFolder(cfg config, f library.MovieFolder, rep *report.Report) {
 		return
 	}
 
-	data, err := nfo.Marshal(nfo.Movie{Title: title, Year: year})
+	sd := streamDetails(filepath.Join(f.Path, f.VideoFile))
+	data, err := nfo.Marshal(nfo.Movie{Title: title, Year: year, StreamDetails: sd})
 	if err != nil {
 		rep.Errored(f.Name, err.Error())
 		return
@@ -117,4 +119,31 @@ func processFolder(cfg config, f library.MovieFolder, rep *report.Report) {
 	case writer.Planned:
 		rep.Planned(f.Name)
 	}
+}
+
+// streamDetails probes the video for Stream Details, mapping them into the NFO
+// model. Probing is best-effort: a container we cannot read (or any probe
+// failure) yields no <fileinfo> rather than aborting the folder, so one odd
+// file never breaks the run.
+func streamDetails(videoPath string) *nfo.StreamDetails {
+	sd, err := probe.Probe(videoPath)
+	if err != nil {
+		return nil
+	}
+
+	out := &nfo.StreamDetails{}
+	if sd.Video.Codec != "" {
+		out.Video = &nfo.VideoStream{
+			Codec:             sd.Video.Codec,
+			Aspect:            sd.Video.Aspect,
+			Width:             sd.Video.Width,
+			Height:            sd.Video.Height,
+			DurationInSeconds: sd.Video.DurationInSeconds,
+			ScanType:          sd.Video.ScanType,
+		}
+	}
+	for _, a := range sd.Audio {
+		out.Audio = append(out.Audio, nfo.AudioStream(a))
+	}
+	return out
 }

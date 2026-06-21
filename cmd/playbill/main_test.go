@@ -36,6 +36,41 @@ func TestRun_WritesNFOForValidFolder(t *testing.T) {
 	assert.Contains(t, out.String(), "enriched: 1")
 }
 
+func TestRun_IntegratesStreamDetailsFromVideo(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "The Matrix (1999)")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "internal", "probe", "testdata", "sample.m4v"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "The Matrix (1999).m4v"), fixture, 0o644))
+
+	var out bytes.Buffer
+	require.NoError(t, run(config{dir: root, out: &out}))
+
+	got, err := os.ReadFile(filepath.Join(dir, "The Matrix (1999).nfo"))
+	require.NoError(t, err)
+
+	body := string(got)
+	assert.Contains(t, body, "<fileinfo>")
+	assert.Contains(t, body, "<codec>h264</codec>")
+	assert.Contains(t, body, "<width>320</width>")
+	assert.Contains(t, body, "<language>eng</language>")
+}
+
+func TestRun_UnprobeableVideoOmitsStreamDetails(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)") // writes a dummy .mkv we cannot probe yet
+
+	var out bytes.Buffer
+	require.NoError(t, run(config{dir: root, out: &out}))
+
+	got, err := os.ReadFile(filepath.Join(root, "The Matrix (1999)", "The Matrix (1999).nfo"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(got), "<fileinfo>")
+	assert.Contains(t, out.String(), "enriched: 1")
+}
+
 func TestRun_LeavesExistingNFOUntouched(t *testing.T) {
 	root := t.TempDir()
 	mkVideo(t, root, "The Matrix (1999)")
