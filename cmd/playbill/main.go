@@ -43,7 +43,7 @@ func realMain(args []string, out, errOut io.Writer) int {
 	cfg.out = out
 
 	if err := run(cfg); err != nil {
-		fmt.Fprintln(errOut, "error:", err)
+		_, _ = fmt.Fprintln(errOut, "error:", err)
 		return 1
 	}
 	return 0
@@ -62,7 +62,7 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 		return config{}, err
 	}
 	if *dir == "" {
-		fmt.Fprintln(errOut, "error: --dir is required")
+		_, _ = fmt.Fprintln(errOut, "error: --dir is required")
 		return config{}, errMissingDir
 	}
 
@@ -83,7 +83,7 @@ func run(cfg config) error {
 		processFolder(cfg, f, &rep)
 	}
 
-	fmt.Fprint(cfg.out, rep.Summary())
+	_, _ = fmt.Fprint(cfg.out, rep.Summary())
 	return nil
 }
 
