@@ -17,7 +17,8 @@ self-contained CLI I can cron.
 
 ## Solution
 
-A single, dependency-free Go binary, `playbill`, that walks a movie library
+A single, self-contained Go binary, `playbill` — it may use Go module
+dependencies, but requires no external programs at runtime — that walks a movie library
 and enriches each movie folder **in place**: it writes a MediaElch-style rich NFO
 and downloads the artwork set, using the folder name as the source of truth for
 title and year. It runs fully non-interactively — confident matches get
@@ -34,9 +35,9 @@ byte-for-byte clone.
 
 1. As a Kodi user, I want to run one command against my movie root, so that every
    movie folder gets its NFO and artwork without per-movie interaction.
-2. As a NAS operator, I want a single static binary with no external runtime
-   dependencies, so that I can drop it in or containerize it without installing
-   ffmpeg, Java, or a desktop app.
+2. As a NAS operator, I want a single static binary that needs no external
+   *programs* at runtime (Go library dependencies are fine), so that I can drop it
+   in or containerize it without installing ffmpeg, Java, or a desktop app.
 3. As a cron user, I want the tool to run fully unattended and never block on a
    prompt, so that scheduled runs always complete.
 4. As a library owner, I want the folder name (`Title (Year)`) treated as ground

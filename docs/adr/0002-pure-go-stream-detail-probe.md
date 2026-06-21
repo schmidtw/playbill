@@ -7,10 +7,11 @@ to `ffprobe`/`mediainfo`.
 
 The obvious path is ffprobe: ubiquitous, accurate, broad format coverage. We
 rejected it to keep the deliverable a single self-contained static binary
-(`CGO_ENABLED=0`) with no external runtime dependency to install on the NAS or in
-the Docker image. The trade-off is weaker format coverage: only MP4/M4V and MKV
-are probed; any other container skips the `<fileinfo>` block and is noted in the
-report.
+(`CGO_ENABLED=0`) that requires **no external programs** at runtime — nothing to
+install on the NAS or in the Docker image. (Go *module* dependencies are fine and
+expected; the constraint is on external executables, not libraries.) The
+trade-off is weaker format coverage: only MP4/M4V and MKV are probed; any other
+container skips the `<fileinfo>` block and is noted in the report.
 
 ## Consequences
 
