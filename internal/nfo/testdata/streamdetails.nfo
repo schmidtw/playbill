@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>The Matrix</title>
+  <year>1999</year>
+  <fileinfo>
+    <streamdetails>
+      <video>
+        <codec>h264</codec>
+        <aspect>1.78</aspect>
+        <width>1920</width>
+        <height>1080</height>
+        <durationinseconds>8160</durationinseconds>
+        <scantype>progressive</scantype>
+      </video>
+      <audio>
+        <codec>aac</codec>
+        <language>eng</language>
+        <channels>2</channels>
+      </audio>
+      <audio>
+        <codec>ac3</codec>
+        <language>fra</language>
+        <channels>6</channels>
+      </audio>
+    </streamdetails>
+  </fileinfo>
+</movie>
