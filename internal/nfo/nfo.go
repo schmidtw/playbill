@@ -39,6 +39,15 @@ type Movie struct {
 	Trailer       string
 	UniqueIDs     []UniqueID
 	StreamDetails *StreamDetails
+	// Posters is the full set of poster candidate URLs from every provider,
+	// embedded as <thumb aspect="poster"> so Kodi's offline "Choose art" UI can
+	// switch posters without re-scraping. It is the full catalog, independent of
+	// which single poster is downloaded to disk.
+	Posters []string
+	// Fanarts is the full set of fanart/backdrop candidate URLs from every
+	// provider, embedded under <fanart>. Like Posters it is the full catalog,
+	// independent of the single fanart written to disk.
+	Fanarts []string
 }
 
 // Rating is one scored rating, e.g. TMDB's. Exactly one should be Default.
@@ -114,6 +123,8 @@ type movieXML struct {
 	Directors     []string      `xml:"director"`
 	Actors        []actorXML    `xml:"actor"`
 	Trailer       string        `xml:"trailer,omitempty"`
+	Posters       []thumbXML    `xml:"thumb"`
+	Fanart        *fanartXML    `xml:"fanart,omitempty"`
 	UniqueIDs     []uniqueIDXML `xml:"uniqueid"`
 	ID            string        `xml:"id,omitempty"`
 	FileInfo      *fileInfoXML  `xml:"fileinfo,omitempty"`
@@ -140,6 +151,19 @@ type actorXML struct {
 	Role  string `xml:"role"`
 	Order int    `xml:"order"`
 	Thumb string `xml:"thumb,omitempty"`
+}
+
+// thumbXML is a single artwork URL. As a top-level <thumb aspect="poster"> it
+// is one poster candidate; nested inside <fanart> the aspect is omitted and it
+// is one fanart candidate.
+type thumbXML struct {
+	Aspect string `xml:"aspect,attr,omitempty"`
+	URL    string `xml:",chardata"`
+}
+
+// fanartXML is the <fanart> element holding every backdrop candidate.
+type fanartXML struct {
+	Thumbs []thumbXML `xml:"thumb"`
 }
 
 type uniqueIDXML struct {
@@ -194,6 +218,8 @@ func Marshal(m Movie) ([]byte, error) {
 		Directors:     m.Directors,
 		Actors:        actors(m.Actors),
 		Trailer:       m.Trailer,
+		Posters:       posters(m.Posters),
+		Fanart:        fanartList(m.Fanarts),
 		UniqueIDs:     uniqueIDs(m.UniqueIDs),
 		ID:            legacyID(m.UniqueIDs),
 		FileInfo:      fileInfo(m.StreamDetails),
@@ -231,6 +257,29 @@ func ratings(rs []Rating) *ratingsXML {
 			x.Default = "true"
 		}
 		out.Ratings = append(out.Ratings, x)
+	}
+	return out
+}
+
+// posters maps the poster catalog URLs to top-level <thumb aspect="poster">
+// elements. An empty catalog yields no elements.
+func posters(urls []string) []thumbXML {
+	out := make([]thumbXML, 0, len(urls))
+	for _, u := range urls {
+		out = append(out, thumbXML{Aspect: "poster", URL: u})
+	}
+	return out
+}
+
+// fanartList maps the fanart catalog URLs to a <fanart> element of nested
+// <thumb> entries, or nil when empty so <fanart> is omitted entirely.
+func fanartList(urls []string) *fanartXML {
+	if len(urls) == 0 {
+		return nil
+	}
+	out := &fanartXML{Thumbs: make([]thumbXML, 0, len(urls))}
+	for _, u := range urls {
+		out.Thumbs = append(out.Thumbs, thumbXML{URL: u})
 	}
 	return out
 }

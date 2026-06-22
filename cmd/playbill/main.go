@@ -298,6 +298,18 @@ func processFolder(cfg config, f library.MovieFolder, rep *report.Report) {
 	}
 
 	movie.StreamDetails = streamDetails(filepath.Join(f.Path, f.VideoFile))
+
+	// Gather art candidates before marshaling so the full poster/fanart catalog
+	// can be embedded in the NFO and the chosen images downloaded. A gather
+	// failure is recorded but never costs the folder its NFO.
+	id := defaultUniqueID(movie.UniqueIDs, "tmdb")
+	var candidates []artselect.Image
+	gathered := false
+	if id != "" {
+		candidates, gathered = gatherArt(cfg, f, id, rep)
+	}
+	movie.Posters, movie.Fanarts = artCatalog(candidates)
+
 	data, err := nfo.Marshal(movie)
 	if err != nil {
 		rep.Errored(f.Name, err.Error())
@@ -319,29 +331,37 @@ func processFolder(cfg config, f library.MovieFolder, rep *report.Report) {
 		rep.Planned(f.Name)
 	}
 
-	downloadArt(cfg, f, movie, rep)
+	if gathered {
+		downloadArt(cfg, f, candidates, rep)
+	}
 }
 
-// downloadArt selects the best image for each wanted art type from TMDB and the
-// optional Fanart.tv provider and downloads it into the folder with Kodi naming.
-// It is best-effort: a failure to list or fetch art is recorded and never aborts
-// the run, so missing artwork does not cost the folder its NFO. Wanted types
-// that no provider had are reported, distinguishing art skipped for lack of a
-// Fanart.tv key from art genuinely unavailable for the movie.
-func downloadArt(cfg config, f library.MovieFolder, movie nfo.Movie, rep *report.Report) {
-	id := defaultUniqueID(movie.UniqueIDs, "tmdb")
-	if id == "" {
-		return
+// artCatalog splits the gathered candidates into the poster and fanart URL
+// lists embedded in the NFO. Every candidate from every provider is included so
+// Kodi's offline "Choose art" UI has the full set of options, independent of
+// which single image is downloaded to disk.
+func artCatalog(candidates []artselect.Image) (posters, fanarts []string) {
+	for _, img := range candidates {
+		switch img.Kind {
+		case artselect.Poster:
+			posters = append(posters, img.URL)
+		case artselect.Fanart:
+			fanarts = append(fanarts, img.URL)
+		}
 	}
+	return posters, fanarts
+}
 
+// downloadArt selects the best image for each wanted art type from the gathered
+// candidates and downloads it into the folder with Kodi naming. It is
+// best-effort: a fetch failure is recorded and never aborts the run, so missing
+// artwork does not cost the folder its NFO. Wanted types that no provider had
+// are reported, distinguishing art skipped for lack of a Fanart.tv key from art
+// genuinely unavailable for the movie.
+func downloadArt(cfg config, f library.MovieFolder, candidates []artselect.Image, rep *report.Report) {
 	wanted := cfg.art
 	if len(wanted) == 0 {
 		wanted = defaultArtSet
-	}
-
-	candidates, ok := gatherArt(cfg, f, id, rep)
-	if !ok {
-		return // a provider failure was recorded; do not also report types missing
 	}
 
 	have := map[artselect.Kind]bool{}

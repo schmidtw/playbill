@@ -112,6 +112,32 @@ func TestMarshal_Rich(t *testing.T) {
 	assert.Equal(t, string(want), string(got))
 }
 
+func TestMarshal_ArtCatalog(t *testing.T) {
+	m := nfo.Movie{
+		Title: "The Matrix",
+		Year:  1999,
+		// The full poster/fanart catalog from both providers, independent of
+		// which single image is downloaded to disk.
+		Posters: []string{
+			"https://image.tmdb.org/t/p/original/poster1.jpg",
+			"https://image.tmdb.org/t/p/original/poster2.jpg",
+			"https://assets.fanart.tv/movies/603/movieposter/poster3.jpg",
+		},
+		Fanarts: []string{
+			"https://image.tmdb.org/t/p/original/fanart1.jpg",
+			"https://assets.fanart.tv/movies/603/moviebackground/fanart2.jpg",
+		},
+	}
+
+	got, err := nfo.Marshal(m)
+	require.NoError(t, err)
+
+	want, err := os.ReadFile("testdata/catalog.nfo")
+	require.NoError(t, err)
+
+	assert.Equal(t, string(want), string(got))
+}
+
 func TestMarshal_UniqueIDsAndLegacyID(t *testing.T) {
 	m := nfo.Movie{
 		Title: "The Matrix",
