@@ -416,6 +416,37 @@ func TestRun_DownloadsSelectedArtWithKodiNaming(t *testing.T) {
 	assert.Equal(t, "603", fr.lastID, "art is fetched for the resolved tmdb id")
 }
 
+func TestRun_EmbedsFullArtCatalogInNFO(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+
+	srv, _ := imageServer(t)
+	fr := matrixResolver()
+	fr.images = []artselect.Image{
+		{Kind: artselect.Poster, Provider: artselect.ProviderTMDB, URL: srv.URL + "/poster-hi.jpg", Language: "en", Popularity: 9},
+		{Kind: artselect.Poster, Provider: artselect.ProviderTMDB, URL: srv.URL + "/poster-lo.jpg", Language: "en", Popularity: 1},
+		{Kind: artselect.Fanart, Provider: artselect.ProviderTMDB, URL: srv.URL + "/fanart-a.jpg", Language: "", Popularity: 5},
+		{Kind: artselect.Fanart, Provider: artselect.ProviderTMDB, URL: srv.URL + "/fanart-b.jpg", Language: "", Popularity: 2},
+		{Kind: artselect.Clearlogo, Provider: artselect.ProviderTMDB, URL: srv.URL + "/logo.png", Language: "en", Popularity: 5},
+	}
+
+	var out bytes.Buffer
+	require.NoError(t, run(config{dir: root, out: &out, resolver: fr, client: srv.Client()}))
+
+	nfoPath := filepath.Join(root, "The Matrix (1999)", "The Matrix (1999).nfo")
+	got, err := os.ReadFile(nfoPath)
+	require.NoError(t, err)
+	body := string(got)
+
+	// Every poster candidate is embedded, not just the one downloaded to disk.
+	assert.Contains(t, body, `<thumb aspect="poster">`+srv.URL+`/poster-hi.jpg</thumb>`)
+	assert.Contains(t, body, `<thumb aspect="poster">`+srv.URL+`/poster-lo.jpg</thumb>`)
+	// Every fanart candidate is embedded under <fanart>.
+	assert.Contains(t, body, "<fanart>")
+	assert.Contains(t, body, "<thumb>"+srv.URL+"/fanart-a.jpg</thumb>")
+	assert.Contains(t, body, "<thumb>"+srv.URL+"/fanart-b.jpg</thumb>")
+}
+
 // fakeArt is an injectable artProvider standing in for the optional Fanart.tv
 // client. It records the id it was asked for and returns canned candidates.
 type fakeArt struct {
