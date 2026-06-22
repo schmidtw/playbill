@@ -101,6 +101,54 @@ func TestReport_JSON_AggregatesOutcomes(t *testing.T) {
 	assert.Equal(t, "permission denied", got.Errored[0].Error)
 }
 
+func TestReport_Summary_DistinguishesArtSkippedNoKeyFromUnavailable(t *testing.T) {
+	var r report.Report
+	r.ArtSkippedNoKey("The Matrix (1999)", "banner")
+	r.ArtSkippedNoKey("The Matrix (1999)", "clearlogo")
+	r.ArtUnavailable("Amélie (2001)", "discart")
+
+	s := r.Summary()
+
+	// The two reasons art is missing are reported separately (user stories 14/15).
+	assert.Contains(t, s, "no Fanart.tv key")
+	assert.Contains(t, s, "skipped")
+	assert.Contains(t, s, "unavailable")
+	// Counts reflect each art type, not each folder.
+	assert.Contains(t, s, "2")
+	assert.Contains(t, s, "1")
+}
+
+func TestReport_JSON_IncludesArtwork(t *testing.T) {
+	var r report.Report
+	r.ArtSkippedNoKey("The Matrix (1999)", "banner")
+	r.ArtUnavailable("Amélie (2001)", "poster")
+
+	data, err := r.JSON()
+	require.NoError(t, err)
+
+	var got struct {
+		Artwork struct {
+			SkippedNoKey []struct {
+				Folder string `json:"folder"`
+				Kind   string `json:"kind"`
+			} `json:"skipped_no_key"`
+			Unavailable []struct {
+				Folder string `json:"folder"`
+				Kind   string `json:"kind"`
+			} `json:"unavailable"`
+		} `json:"artwork"`
+	}
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	require.Len(t, got.Artwork.SkippedNoKey, 1)
+	assert.Equal(t, "The Matrix (1999)", got.Artwork.SkippedNoKey[0].Folder)
+	assert.Equal(t, "banner", got.Artwork.SkippedNoKey[0].Kind)
+
+	require.Len(t, got.Artwork.Unavailable, 1)
+	assert.Equal(t, "Amélie (2001)", got.Artwork.Unavailable[0].Folder)
+	assert.Equal(t, "poster", got.Artwork.Unavailable[0].Kind)
+}
+
 func TestReport_ConcurrentRecordingIsSafe(t *testing.T) {
 	var r report.Report
 	var wg sync.WaitGroup
