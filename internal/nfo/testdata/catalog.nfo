@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>The Matrix</title>
+  <year>1999</year>
+  <thumb aspect="poster">https://image.tmdb.org/t/p/original/poster1.jpg</thumb>
+  <thumb aspect="poster">https://image.tmdb.org/t/p/original/poster2.jpg</thumb>
+  <thumb aspect="poster">https://assets.fanart.tv/movies/603/movieposter/poster3.jpg</thumb>
+  <fanart>
+    <thumb>https://image.tmdb.org/t/p/original/fanart1.jpg</thumb>
+    <thumb>https://assets.fanart.tv/movies/603/moviebackground/fanart2.jpg</thumb>
+  </fanart>
+</movie>
