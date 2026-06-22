@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -311,6 +312,28 @@ func TestParseArgs_JSON(t *testing.T) {
 	assert.True(t, cfg.json)
 }
 
+func TestParseArgs_Art(t *testing.T) {
+	var errOut bytes.Buffer
+	cfg, err := parseArgs([]string{"--dir", "/movies"}, &errOut)
+	require.NoError(t, err)
+	assert.Equal(t, []artselect.Kind{
+		artselect.Poster, artselect.Fanart, artselect.Banner,
+		artselect.Clearlogo, artselect.Discart, artselect.Landscape,
+	}, cfg.art, "default art set is the PRD's six types")
+
+	cfg, err = parseArgs([]string{"--dir", "/movies", "--art", "poster, banner ,clearart"}, &errOut)
+	require.NoError(t, err)
+	assert.Equal(t, []artselect.Kind{artselect.Poster, artselect.Banner, artselect.Clearart}, cfg.art,
+		"--art overrides the set and tolerates surrounding spaces")
+}
+
+func TestParseArgs_UnknownArtTypeIsError(t *testing.T) {
+	var errOut bytes.Buffer
+	_, err := parseArgs([]string{"--dir", "/movies", "--art", "poster,bogus"}, &errOut)
+	require.Error(t, err)
+	assert.Contains(t, errOut.String(), "bogus", "an unknown art type names itself in the error")
+}
+
 func TestParseArgs_DefaultsAndDir(t *testing.T) {
 	var errOut bytes.Buffer
 	cfg, err := parseArgs([]string{"--dir", "/movies"}, &errOut)
@@ -391,6 +414,104 @@ func TestRun_DownloadsSelectedArtWithKodiNaming(t *testing.T) {
 	// is never fetched.
 	assert.ElementsMatch(t, []string{"/poster.jpg", "/fanart.jpg", "/logo.png"}, *paths)
 	assert.Equal(t, "603", fr.lastID, "art is fetched for the resolved tmdb id")
+}
+
+// fakeArt is an injectable artProvider standing in for the optional Fanart.tv
+// client. It records the id it was asked for and returns canned candidates.
+type fakeArt struct {
+	images []artselect.Image
+	err    error
+	lastID string
+}
+
+func (f *fakeArt) Images(id string) ([]artselect.Image, error) {
+	f.lastID = id
+	return f.images, f.err
+}
+
+func TestRun_FanartArtIsDownloadedAndPreferredOverTMDB(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+
+	srv, paths := imageServer(t)
+	fr := matrixResolver()
+	fr.images = []artselect.Image{
+		{Kind: artselect.Poster, Provider: artselect.ProviderTMDB, URL: srv.URL + "/poster.jpg", Language: "en", Popularity: 5},
+		{Kind: artselect.Clearlogo, Provider: artselect.ProviderTMDB, URL: srv.URL + "/tmdb-logo.png", Language: "en", Popularity: 99},
+	}
+	fa := &fakeArt{images: []artselect.Image{
+		{Kind: artselect.Clearlogo, Provider: artselect.ProviderFanart, URL: srv.URL + "/fanart-logo.png", Language: "en", Popularity: 1},
+		{Kind: artselect.Banner, Provider: artselect.ProviderFanart, URL: srv.URL + "/banner.jpg", Language: "en", Popularity: 3},
+	}}
+
+	require.NoError(t, run(config{dir: root, out: &bytes.Buffer{}, resolver: fr, fanart: fa, client: srv.Client()}))
+
+	dir := filepath.Join(root, "The Matrix (1999)")
+	for _, name := range []string{"The Matrix (1999)-poster.jpg", "The Matrix (1999)-banner.jpg", "The Matrix (1999)-clearlogo.png"} {
+		_, err := os.Stat(filepath.Join(dir, name))
+		assert.NoError(t, err, "expected art file %s", name)
+	}
+	// Fanart.tv's clearlogo wins over the more-popular TMDB one (user story 22).
+	assert.Contains(t, *paths, "/fanart-logo.png")
+	assert.NotContains(t, *paths, "/tmdb-logo.png")
+	assert.Equal(t, "603", fa.lastID, "Fanart.tv is queried for the resolved tmdb id")
+}
+
+func TestRun_NoFanartKeyReportsExtendedTypesSkippedNoKey(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+
+	srv, _ := imageServer(t)
+	fr := matrixResolver()
+	fr.images = []artselect.Image{
+		{Kind: artselect.Poster, Provider: artselect.ProviderTMDB, URL: srv.URL + "/poster.jpg", Language: "en", Popularity: 5},
+	}
+
+	var out bytes.Buffer
+	// No fanart provider: the default set's Fanart.tv-only types cannot be fetched.
+	require.NoError(t, run(config{dir: root, json: true, out: &out, resolver: fr, client: srv.Client()}))
+
+	var doc struct {
+		Artwork struct {
+			SkippedNoKey []struct{ Kind string } `json:"skipped_no_key"`
+			Unavailable  []struct{ Kind string } `json:"unavailable"`
+		} `json:"artwork"`
+	}
+	require.NoError(t, json.Unmarshal(out.Bytes(), &doc), out.String())
+
+	var skipped, unavail []string
+	for _, a := range doc.Artwork.SkippedNoKey {
+		skipped = append(skipped, a.Kind)
+	}
+	for _, a := range doc.Artwork.Unavailable {
+		unavail = append(unavail, a.Kind)
+	}
+	// Fanart.tv-only types are skipped-no-key; clearlogo/fanart are TMDB-capable
+	// but absent for this movie, so they are unavailable, not skipped-no-key.
+	assert.ElementsMatch(t, []string{"banner", "discart", "landscape"}, skipped)
+	assert.ElementsMatch(t, []string{"fanart", "clearlogo"}, unavail)
+}
+
+func TestRun_ArtFlagRestrictsWhichTypesAreFetched(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+
+	srv, paths := imageServer(t)
+	fr := matrixResolver()
+	fr.images = []artselect.Image{
+		{Kind: artselect.Poster, Provider: artselect.ProviderTMDB, URL: srv.URL + "/poster.jpg", Language: "en", Popularity: 5},
+		{Kind: artselect.Fanart, Provider: artselect.ProviderTMDB, URL: srv.URL + "/fanart.jpg", Language: "", Popularity: 5},
+		{Kind: artselect.Clearlogo, Provider: artselect.ProviderTMDB, URL: srv.URL + "/logo.png", Language: "en", Popularity: 5},
+	}
+
+	require.NoError(t, run(config{dir: root, out: &bytes.Buffer{}, resolver: fr, client: srv.Client(),
+		art: []artselect.Kind{artselect.Poster}}))
+
+	// Only the poster is fetched; --art excluded fanart and clearlogo.
+	assert.Equal(t, []string{"/poster.jpg"}, *paths)
+	dir := filepath.Join(root, "The Matrix (1999)")
+	_, statErr := os.Stat(filepath.Join(dir, "The Matrix (1999)-fanart.jpg"))
+	assert.True(t, os.IsNotExist(statErr), "fanart is not fetched when --art omits it")
 }
 
 func TestRun_ExistingArtSkippedUnlessForce(t *testing.T) {
@@ -528,6 +649,37 @@ func TestRealMain_JSONFlagEmitsMachineReadableReport(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(out.Bytes(), &doc), "stdout must be valid JSON: %s", out.String())
 	assert.Equal(t, 1, doc.Counts.Enriched)
+}
+
+func TestRealMain_FanartArtDownloadedWhenKeyPresent(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+
+	// One stub plays both roles: the Fanart.tv movies API (returning a banner
+	// whose URL points back at itself) and the image host for that banner.
+	var fsrv *httptest.Server
+	fsrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/movies/") {
+			_, _ = fmt.Fprintf(w, `{"moviebanner":[{"url":%q,"lang":"en","likes":"5"}]}`, fsrv.URL+"/img/banner.jpg")
+			return
+		}
+		_, _ = w.Write([]byte("imgdata"))
+	}))
+	t.Cleanup(fsrv.Close)
+
+	t.Setenv("TMDB_API_KEY", "key")
+	t.Setenv("TMDB_BASE_URL", stubTMDB(t))
+	t.Setenv("FANARTTV_API_KEY", "fkey")
+	t.Setenv("FANARTTV_BASE_URL", fsrv.URL)
+
+	var out, errOut bytes.Buffer
+	code := realMain([]string{"--dir", root}, &out, &errOut)
+	require.Equal(t, 0, code, errOut.String())
+
+	banner := filepath.Join(root, "The Matrix (1999)", "The Matrix (1999)-banner.jpg")
+	got, err := os.ReadFile(banner)
+	require.NoError(t, err, "the Fanart.tv banner is downloaded with Kodi naming")
+	assert.Equal(t, "imgdata", string(got))
 }
 
 func TestRealMain_MissingAPIKeyReturnsOne(t *testing.T) {
