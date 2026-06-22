@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -281,6 +282,35 @@ func TestRun_ProcessesFoldersConcurrentlyUpToLimit(t *testing.T) {
 	assert.Contains(t, out.String(), fmt.Sprintf("enriched: %d", folders), "every folder is still processed")
 }
 
+func TestRun_JSONReportWrittenToStdout(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+
+	var out bytes.Buffer
+	require.NoError(t, run(config{dir: root, json: true, out: &out, resolver: matrixResolver()}))
+
+	var doc struct {
+		Counts struct {
+			Enriched int `json:"enriched"`
+		} `json:"counts"`
+		Enriched []string `json:"enriched"`
+	}
+	require.NoError(t, json.Unmarshal(out.Bytes(), &doc), "stdout must be valid JSON: %s", out.String())
+	assert.Equal(t, 1, doc.Counts.Enriched)
+	assert.Equal(t, []string{"The Matrix (1999)"}, doc.Enriched)
+}
+
+func TestParseArgs_JSON(t *testing.T) {
+	var errOut bytes.Buffer
+	cfg, err := parseArgs([]string{"--dir", "/movies"}, &errOut)
+	require.NoError(t, err)
+	assert.False(t, cfg.json, "json defaults to off")
+
+	cfg, err = parseArgs([]string{"--dir", "/movies", "--json"}, &errOut)
+	require.NoError(t, err)
+	assert.True(t, cfg.json)
+}
+
 func TestParseArgs_DefaultsAndDir(t *testing.T) {
 	var errOut bytes.Buffer
 	cfg, err := parseArgs([]string{"--dir", "/movies"}, &errOut)
@@ -449,6 +479,55 @@ func TestRealMain_SuccessReturnsZero(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(root, "The Matrix (1999)", "The Matrix (1999).nfo"))
 	require.NoError(t, err)
 	assert.Contains(t, string(got), `<uniqueid type="imdb">tt0133093</uniqueid>`)
+}
+
+// erroringTMDB serves a matching search but fails the details request, so a
+// folder resolves to a non-sentinel error and lands in the report's errored
+// bucket.
+func erroringTMDB(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search/movie" {
+			_, _ = w.Write([]byte(`{"results":[{"id":603,"title":"The Matrix","release_date":"1999-03-30"}]}`))
+			return
+		}
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func TestRealMain_ErroredFolderReturnsErroredCode(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+
+	t.Setenv("TMDB_API_KEY", "key")
+	t.Setenv("TMDB_BASE_URL", erroringTMDB(t))
+
+	var out, errOut bytes.Buffer
+	code := realMain([]string{"--dir", root}, &out, &errOut)
+	assert.Equal(t, exitErrored, code, "a folder error makes the run outcome non-zero")
+	assert.Contains(t, out.String(), "errored: 1")
+}
+
+func TestRealMain_JSONFlagEmitsMachineReadableReport(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+
+	t.Setenv("TMDB_API_KEY", "key")
+	t.Setenv("TMDB_BASE_URL", stubTMDB(t))
+
+	var out, errOut bytes.Buffer
+	code := realMain([]string{"--dir", root, "--json"}, &out, &errOut)
+	assert.Equal(t, 0, code, errOut.String())
+
+	var doc struct {
+		Counts struct {
+			Enriched int `json:"enriched"`
+		} `json:"counts"`
+	}
+	require.NoError(t, json.Unmarshal(out.Bytes(), &doc), "stdout must be valid JSON: %s", out.String())
+	assert.Equal(t, 1, doc.Counts.Enriched)
 }
 
 func TestRealMain_MissingAPIKeyReturnsOne(t *testing.T) {

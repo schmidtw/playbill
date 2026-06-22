@@ -46,11 +46,23 @@ type config struct {
 	dir         string
 	dryRun      bool
 	force       bool
+	json        bool
 	concurrency int
 	out         io.Writer
 	client      *http.Client
 	resolver    resolver
+	// report, when non-nil, is where run accumulates per-folder outcomes so the
+	// caller can inspect the run for its exit code. run creates its own when nil.
+	report *report.Report
 }
+
+// Process exit codes (user story 34: meaningful exit codes for automation).
+const (
+	exitOK      = 0 // every folder processed cleanly
+	exitFatal   = 1 // the run could not start or complete (e.g. unreadable root)
+	exitUsage   = 2 // bad command-line usage
+	exitErrored = 3 // run completed but one or more folders errored
+)
 
 // errMissingDir is returned by parseArgs when --dir is not supplied.
 var errMissingDir = errors.New("--dir is required")
@@ -60,27 +72,32 @@ func main() {
 }
 
 // realMain is the testable entry point. It parses args, runs the enrichment,
-// and returns a process exit code: 0 on success, 1 on a fatal run error, 2 on
-// bad usage.
+// and returns a process exit code reflecting the run outcome: exitOK when every
+// folder processed cleanly, exitErrored when some folder errored, exitFatal on a
+// fatal run error, and exitUsage on bad usage.
 func realMain(args []string, out, errOut io.Writer) int {
 	cfg, err := parseArgs(args, errOut)
 	if err != nil {
-		return 2
+		return exitUsage
 	}
 	cfg.out = out
 	cfg.client = &http.Client{Timeout: 30 * time.Second}
+	cfg.report = &report.Report{}
 
 	cfg.resolver, err = newResolver()
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
-		return 1
+		return exitFatal
 	}
 
 	if err := run(cfg); err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
-		return 1
+		return exitFatal
 	}
-	return 0
+	if cfg.report.HasErrors() {
+		return exitErrored
+	}
+	return exitOK
 }
 
 // newResolver builds the TMDB client from the environment. The API key comes
@@ -104,6 +121,7 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 	dryRun := fs.Bool("dry-run", false, "report intended writes without modifying the filesystem")
 	force := fs.Bool("force", false, "re-fetch and overwrite existing NFO and artwork files")
 	concurrency := fs.Int("concurrency", defaultConcurrency, "number of folders to process in parallel")
+	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON report instead of the text summary")
 
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -113,7 +131,7 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 		return config{}, errMissingDir
 	}
 
-	return config{dir: *dir, dryRun: *dryRun, force: *force, concurrency: *concurrency}, nil
+	return config{dir: *dir, dryRun: *dryRun, force: *force, concurrency: *concurrency, json: *jsonOut}, nil
 }
 
 // run scans the library, writes a rich NFO per matched folder, and prints an
@@ -126,9 +144,26 @@ func run(cfg config) error {
 		return err
 	}
 
-	var rep report.Report
-	processFolders(cfg, folders, &rep)
+	rep := cfg.report
+	if rep == nil {
+		rep = &report.Report{}
+	}
+	processFolders(cfg, folders, rep)
 
+	return render(cfg, rep)
+}
+
+// render writes the end-of-run report to cfg.out: an indented JSON document
+// when cfg.json is set (user story 34), otherwise the human-readable summary.
+func render(cfg config, rep *report.Report) error {
+	if cfg.json {
+		data, err := rep.JSON()
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(cfg.out, string(data))
+		return nil
+	}
 	_, _ = fmt.Fprint(cfg.out, rep.Summary())
 	return nil
 }
