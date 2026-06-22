@@ -8,6 +8,8 @@
 // URL as a final stable tiebreak. See the PRD "Selection & output specifics".
 package artselect
 
+import "sort"
+
 // Kind is an art type, used both to group candidates and to name the file on
 // disk (e.g. "Title (Year)-poster.jpg").
 type Kind string
@@ -46,9 +48,22 @@ type Image struct {
 	Height     int
 }
 
+// kindOrder is the canonical output ordering of art types, matching the PRD's
+// default art set, so Select's result is deterministic regardless of input or
+// map iteration order.
+var kindOrder = map[Kind]int{
+	Poster:    0,
+	Fanart:    1,
+	Banner:    2,
+	Clearlogo: 3,
+	Discart:   4,
+	Landscape: 5,
+}
+
 // Select picks the single best Image for each Kind present in candidates and
-// returns the winners. Order is currently unspecified beyond one-per-Kind; it
-// is made deterministic in a later step.
+// returns the winners sorted by the canonical art-type order. The selection is
+// fully deterministic: a tie that survives every policy key breaks on the lower
+// URL, so the result does not depend on the input order.
 func Select(candidates []Image, preferredLang string) []Image {
 	best := map[Kind]Image{}
 	for _, img := range candidates {
@@ -62,19 +77,46 @@ func Select(candidates []Image, preferredLang string) []Image {
 	for _, img := range best {
 		out = append(out, img)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if ki, kj := kindOrder[out[i].Kind], kindOrder[out[j].Kind]; ki != kj {
+			return ki < kj
+		}
+		return out[i].Kind < out[j].Kind
+	})
 	return out
 }
 
 // better reports whether candidate a is a strictly better choice than b under
-// the selection policy: preferred language, then popularity, then resolution.
+// the selection policy: preferred language, then provider precedence (Fanart.tv
+// over TMDB), then popularity, then resolution. Provider precedence outranks
+// popularity because the two providers' scores are not comparable.
 func better(a, b Image, preferredLang string) bool {
 	if ra, rb := langRank(a.Language, preferredLang), langRank(b.Language, preferredLang); ra != rb {
 		return ra < rb
 	}
+	if pa, pb := providerRank(a.Provider), providerRank(b.Provider); pa != pb {
+		return pa < pb
+	}
 	if a.Popularity != b.Popularity {
 		return a.Popularity > b.Popularity
 	}
-	return resolution(a) > resolution(b)
+	if ra, rb := resolution(a), resolution(b); ra != rb {
+		return ra > rb
+	}
+	return a.URL < b.URL
+}
+
+// providerRank orders sources by precedence: Fanart.tv before TMDB before any
+// unknown provider. Lower is better.
+func providerRank(p Provider) int {
+	switch p {
+	case ProviderFanart:
+		return 0
+	case ProviderTMDB:
+		return 1
+	default:
+		return 2
+	}
 }
 
 // resolution is a candidate's pixel area, used as the resolution tiebreak.
