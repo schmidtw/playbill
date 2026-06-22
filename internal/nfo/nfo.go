@@ -277,6 +277,25 @@ func legacyID(ids []UniqueID) string {
 	return ""
 }
 
+// TMDBID extracts the <uniqueid type="tmdb"> value from existing NFO bytes. It
+// returns ok=false when the data is not parseable NFO, has no tmdb unique id, or
+// the tmdb value is empty. Callers use this to trust a prior (possibly
+// hand-corrected) TMDB match and short-circuit a fresh search.
+func TMDBID(data []byte) (id string, ok bool) {
+	var doc struct {
+		UniqueIDs []uniqueIDXML `xml:"uniqueid"`
+	}
+	if err := xml.Unmarshal(data, &doc); err != nil {
+		return "", false
+	}
+	for _, u := range doc.UniqueIDs {
+		if u.Type == "tmdb" && u.Value != "" {
+			return u.Value, true
+		}
+	}
+	return "", false
+}
+
 // fileInfo maps the canonical StreamDetails to its XML form, or nil when there
 // are none (so <fileinfo> is omitted entirely).
 func fileInfo(sd *StreamDetails) *fileInfoXML {

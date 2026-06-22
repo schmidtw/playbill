@@ -24,6 +24,54 @@ func TestMarshal_Minimal(t *testing.T) {
 	assert.Equal(t, string(want), string(got))
 }
 
+func TestTMDBID(t *testing.T) {
+	tests := []struct {
+		name string
+		nfo  string
+		want string
+		ok   bool
+	}{
+		{
+			name: "present with default attr",
+			nfo:  `<movie><uniqueid type="tmdb" default="true">603</uniqueid></movie>`,
+			want: "603",
+			ok:   true,
+		},
+		{
+			name: "present among others",
+			nfo:  `<movie><uniqueid type="imdb">tt0133093</uniqueid><uniqueid type="tmdb">603</uniqueid></movie>`,
+			want: "603",
+			ok:   true,
+		},
+		{
+			name: "absent",
+			nfo:  `<movie><uniqueid type="imdb">tt0133093</uniqueid></movie>`,
+			want: "",
+			ok:   false,
+		},
+		{
+			name: "empty tmdb value is not a match",
+			nfo:  `<movie><uniqueid type="tmdb"></uniqueid></movie>`,
+			want: "",
+			ok:   false,
+		},
+		{
+			name: "not xml",
+			nfo:  "hand-tuned plain text",
+			want: "",
+			ok:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := nfo.TMDBID([]byte(tt.nfo))
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestMarshal_Rich(t *testing.T) {
 	m := nfo.Movie{
 		Title:         "The Matrix",
