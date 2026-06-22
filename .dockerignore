@@ -1,0 +1,19 @@
+# Keep the Docker build context small: only sources are needed, and the build
+# stage compiles the binary itself.
+/dist/
+/playbill
+*.test
+*.out
+coverage.txt
+*.coverprofile
+
+.git/
+.github/
+.idea/
+.vscode/
+
+# Local automation runner (not part of the project).
+/ralph.sh
+
+# Docs are not needed to build the binary.
+/docs/
