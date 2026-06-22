@@ -52,7 +52,8 @@ type Image struct {
 func Select(candidates []Image, preferredLang string) []Image {
 	best := map[Kind]Image{}
 	for _, img := range candidates {
-		if _, ok := best[img.Kind]; !ok {
+		cur, ok := best[img.Kind]
+		if !ok || better(img, cur, preferredLang) {
 			best[img.Kind] = img
 		}
 	}
@@ -62,4 +63,33 @@ func Select(candidates []Image, preferredLang string) []Image {
 		out = append(out, img)
 	}
 	return out
+}
+
+// better reports whether candidate a is a strictly better choice than b under
+// the selection policy: preferred language, then popularity, then resolution.
+func better(a, b Image, preferredLang string) bool {
+	if ra, rb := langRank(a.Language, preferredLang), langRank(b.Language, preferredLang); ra != rb {
+		return ra < rb
+	}
+	if a.Popularity != b.Popularity {
+		return a.Popularity > b.Popularity
+	}
+	return resolution(a) > resolution(b)
+}
+
+// resolution is a candidate's pixel area, used as the resolution tiebreak.
+func resolution(img Image) int { return img.Width * img.Height }
+
+// langRank scores a candidate's language against the preference: the preferred
+// language is best, a language-neutral image next, any other language last.
+// Lower is better.
+func langRank(lang, preferred string) int {
+	switch lang {
+	case preferred:
+		return 0
+	case "":
+		return 1
+	default:
+		return 2
+	}
 }
