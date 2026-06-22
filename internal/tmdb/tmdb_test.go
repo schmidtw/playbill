@@ -4,13 +4,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/schmidtw/playbill/internal/artselect"
 	"github.com/schmidtw/playbill/internal/nfo"
 	"github.com/schmidtw/playbill/internal/tmdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/time/rate"
 )
 
 func TestNew_EmptyKeyIsError(t *testing.T) {
@@ -330,6 +333,31 @@ func TestImages_HTTPErrorIsReturned(t *testing.T) {
 
 	_, err := c.Images("603")
 	require.Error(t, err)
+}
+
+func TestClient_RateLimitThrottlesRequests(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	// One token up front, then one every 60ms: three requests must take at
+	// least two refill intervals.
+	limiter := rate.NewLimiter(rate.Every(60*time.Millisecond), 1)
+	c, err := tmdb.New("key", tmdb.WithBaseURL(srv.URL), tmdb.WithRateLimiter(limiter))
+	require.NoError(t, err)
+
+	start := time.Now()
+	for range 3 {
+		_, err := c.Images("603")
+		require.NoError(t, err)
+	}
+	elapsed := time.Since(start)
+
+	assert.Equal(t, int32(3), hits.Load(), "every request still reaches the server")
+	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond, "requests are throttled by the limiter")
 }
 
 func TestResolve_IMDBIDFallsBackToExternalIDs(t *testing.T) {

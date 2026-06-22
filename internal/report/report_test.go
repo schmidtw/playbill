@@ -1,10 +1,13 @@
 package report_test
 
 import (
+	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/schmidtw/playbill/internal/report"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReport_Summary_Counts(t *testing.T) {
@@ -52,4 +55,73 @@ func TestReport_HasErrors(t *testing.T) {
 
 	r.Errored("Broken (2000)", "boom")
 	assert.True(t, r.HasErrors())
+}
+
+func TestReport_JSON_AggregatesOutcomes(t *testing.T) {
+	var r report.Report
+	r.Enriched("The Matrix (1999)")
+	r.Enriched("Amélie (2001)")
+	r.Skipped("Inception (2010)")
+	r.Unmatched("Random Folder")
+	r.Planned("Dune (2021)")
+	r.Errored("Broken (2000)", "permission denied")
+
+	data, err := r.JSON()
+	require.NoError(t, err)
+
+	var got struct {
+		Counts struct {
+			Enriched  int `json:"enriched"`
+			Skipped   int `json:"skipped"`
+			Unmatched int `json:"unmatched"`
+			Planned   int `json:"planned"`
+			Errored   int `json:"errored"`
+		} `json:"counts"`
+		Enriched  []string `json:"enriched"`
+		Skipped   []string `json:"skipped"`
+		Unmatched []string `json:"unmatched"`
+		Planned   []string `json:"planned"`
+		Errored   []struct {
+			Name  string `json:"name"`
+			Error string `json:"error"`
+		} `json:"errored"`
+	}
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	assert.Equal(t, 2, got.Counts.Enriched)
+	assert.Equal(t, 1, got.Counts.Skipped)
+	assert.Equal(t, 1, got.Counts.Unmatched)
+	assert.Equal(t, 1, got.Counts.Planned)
+	assert.Equal(t, 1, got.Counts.Errored)
+
+	assert.Equal(t, []string{"The Matrix (1999)", "Amélie (2001)"}, got.Enriched)
+	assert.Equal(t, []string{"Random Folder"}, got.Unmatched)
+	require.Len(t, got.Errored, 1)
+	assert.Equal(t, "Broken (2000)", got.Errored[0].Name)
+	assert.Equal(t, "permission denied", got.Errored[0].Error)
+}
+
+func TestReport_ConcurrentRecordingIsSafe(t *testing.T) {
+	var r report.Report
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Go(func() {
+			r.Enriched("movie")
+			r.Errored("bad", "boom")
+		})
+	}
+	wg.Wait()
+
+	data, err := r.JSON()
+	require.NoError(t, err)
+
+	var got struct {
+		Counts struct {
+			Enriched int `json:"enriched"`
+			Errored  int `json:"errored"`
+		} `json:"counts"`
+	}
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, 50, got.Counts.Enriched)
+	assert.Equal(t, 50, got.Counts.Errored)
 }
