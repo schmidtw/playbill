@@ -3,6 +3,7 @@ package tmdb_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/schmidtw/playbill/internal/nfo"
@@ -81,10 +82,10 @@ func fakeTMDB(t *testing.T, search, details string) (*httptest.Server, *[]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits = append(hits, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/search/movie":
+		switch {
+		case r.URL.Path == "/search/movie":
 			_, _ = w.Write([]byte(search))
-		case "/movie/603":
+		case strings.HasPrefix(r.URL.Path, "/movie/"):
 			_, _ = w.Write([]byte(details))
 		default:
 			http.NotFound(w, r)
@@ -138,4 +139,138 @@ func TestResolve_SearchAndMap(t *testing.T) {
 	assert.Equal(t, nfo.UniqueID{Type: "imdb", Value: "tt0133093"}, m.UniqueIDs[1])
 
 	assert.Equal(t, []string{"/search/movie", "/movie/603"}, *hits)
+}
+
+func TestResolve_KnownIDShortCircuitsSearch(t *testing.T) {
+	srv, hits := fakeTMDB(t, `{"results":[]}`, detailsBody)
+
+	c, err := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	m, err := c.Resolve(tmdb.ResolveRequest{Title: "ignored", Year: 0, KnownID: "603"})
+	require.NoError(t, err)
+	assert.Equal(t, "The Matrix", m.Title)
+
+	// Only the details endpoint is hit — the search is skipped.
+	assert.Equal(t, []string{"/movie/603"}, *hits)
+}
+
+func TestResolve_NoMatch(t *testing.T) {
+	srv, _ := fakeTMDB(t, `{"results":[]}`, detailsBody)
+	c, _ := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+
+	_, err := c.Resolve(tmdb.ResolveRequest{Title: "Nope", Year: 1999})
+	assert.ErrorIs(t, err, tmdb.ErrNoMatch)
+}
+
+func TestResolve_YearMismatchIsNoMatch(t *testing.T) {
+	body := `{"results":[{"id":1,"title":"The Matrix","release_date":"2003-05-15"}]}`
+	srv, _ := fakeTMDB(t, body, detailsBody)
+	c, _ := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+
+	_, err := c.Resolve(tmdb.ResolveRequest{Title: "The Matrix", Year: 1999})
+	assert.ErrorIs(t, err, tmdb.ErrNoMatch)
+}
+
+func TestResolve_AmbiguousExactMatches(t *testing.T) {
+	body := `{"results":[
+		{"id":1,"title":"The Matrix","release_date":"1999-01-01"},
+		{"id":2,"title":"the matrix","release_date":"1999-12-31"}
+	]}`
+	srv, _ := fakeTMDB(t, body, detailsBody)
+	c, _ := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+
+	_, err := c.Resolve(tmdb.ResolveRequest{Title: "The Matrix", Year: 1999})
+	assert.ErrorIs(t, err, tmdb.ErrAmbiguousMatch)
+}
+
+func TestResolve_AmbiguousNonExactMatches(t *testing.T) {
+	body := `{"results":[
+		{"id":1,"title":"Matrix Reloaded","release_date":"1999-01-01"},
+		{"id":2,"title":"Matrix Revolutions","release_date":"1999-12-31"}
+	]}`
+	srv, _ := fakeTMDB(t, body, detailsBody)
+	c, _ := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+
+	_, err := c.Resolve(tmdb.ResolveRequest{Title: "The Matrix", Year: 1999})
+	assert.ErrorIs(t, err, tmdb.ErrAmbiguousMatch)
+}
+
+func TestResolve_LoneNonExactCandidateTrusted(t *testing.T) {
+	// One plausible result in the right year, even if the title isn't an exact
+	// normalized match, is trusted (the folder name is ground truth).
+	body := `{"results":[{"id":603,"title":"The Matrix (Remastered)","release_date":"1999-03-30"}]}`
+	srv, _ := fakeTMDB(t, body, detailsBody)
+	c, _ := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+
+	m, err := c.Resolve(tmdb.ResolveRequest{Title: "The Matrix", Year: 1999})
+	require.NoError(t, err)
+	assert.Equal(t, "The Matrix", m.Title)
+}
+
+func TestResolve_SearchHTTPErrorIsReturned(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	c, _ := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+
+	_, err := c.Resolve(tmdb.ResolveRequest{Title: "The Matrix", Year: 1999})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, tmdb.ErrNoMatch)
+}
+
+func TestResolve_DetailsBadJSONIsError(t *testing.T) {
+	srv, _ := fakeTMDB(t, searchBody, `{not valid json`)
+	c, _ := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+
+	_, err := c.Resolve(tmdb.ResolveRequest{Title: "The Matrix", Year: 1999})
+	require.Error(t, err)
+}
+
+func TestResolve_TransportErrorIsReturned(t *testing.T) {
+	// Point at a base URL that nothing is listening on.
+	c, _ := tmdb.New("key", tmdb.WithBaseURL("http://127.0.0.1:1"))
+
+	_, err := c.Resolve(tmdb.ResolveRequest{Title: "The Matrix", Year: 1999, KnownID: "603"})
+	require.Error(t, err)
+}
+
+// minimalDetails is a sparsely-populated details payload: unrated, no
+// collection, no IMDB id, certification only outside the US, and a non-Trailer
+// YouTube video used as the trailer fallback.
+const minimalDetails = `{
+  "id": 700,
+  "title": "Obscure Film",
+  "release_date": "2010-06-01",
+  "vote_count": 0,
+  "release_dates": {"results": [{"iso_3166_1": "FR", "release_dates": [{"certification": "12", "type": 3}]}]},
+  "videos": {"results": [{"site": "YouTube", "type": "Clip", "key": "clipkey"}]}
+}`
+
+func TestResolve_MinimalDetailsDegradesGracefully(t *testing.T) {
+	srv, _ := fakeTMDB(t, `{"results":[]}`, minimalDetails)
+	c, _ := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+
+	m, err := c.Resolve(tmdb.ResolveRequest{KnownID: "700"})
+	require.NoError(t, err)
+
+	assert.Equal(t, "Obscure Film", m.Title)
+	assert.Empty(t, m.Ratings, "unrated movie has no ratings")
+	assert.Empty(t, m.Set, "no collection")
+	assert.Empty(t, m.MPAA, "no US certification")
+	assert.Equal(t, "plugin://plugin.video.youtube/?action=play_video&videoid=clipkey", m.Trailer)
+	require.Len(t, m.UniqueIDs, 1, "only the tmdb id when no imdb id")
+	assert.Equal(t, "tmdb", m.UniqueIDs[0].Type)
+}
+
+func TestResolve_IMDBIDFallsBackToExternalIDs(t *testing.T) {
+	details := `{"id":800,"title":"X","release_date":"2020-01-01","external_ids":{"imdb_id":"tt9999999"}}`
+	srv, _ := fakeTMDB(t, `{"results":[]}`, details)
+	c, _ := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+
+	m, err := c.Resolve(tmdb.ResolveRequest{KnownID: "800"})
+	require.NoError(t, err)
+	require.Len(t, m.UniqueIDs, 2)
+	assert.Equal(t, nfo.UniqueID{Type: "imdb", Value: "tt9999999"}, m.UniqueIDs[1])
 }
