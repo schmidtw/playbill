@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/schmidtw/playbill/internal/artselect"
@@ -28,6 +29,10 @@ import (
 // in this library are English; a configurable preference is a later concern.
 const preferredLang = "en"
 
+// defaultConcurrency is the number of folders processed in parallel when
+// --concurrency is not given (see the PRD: bounded worker pool, default 4).
+const defaultConcurrency = 4
+
 // resolver turns a parsed folder name into the canonical, rich movie metadata
 // and supplies its baseline artwork candidates. *tmdb.Client satisfies it;
 // tests inject fakes.
@@ -38,12 +43,13 @@ type resolver interface {
 
 // config holds the resolved run options.
 type config struct {
-	dir      string
-	dryRun   bool
-	force    bool
-	out      io.Writer
-	client   *http.Client
-	resolver resolver
+	dir         string
+	dryRun      bool
+	force       bool
+	concurrency int
+	out         io.Writer
+	client      *http.Client
+	resolver    resolver
 }
 
 // errMissingDir is returned by parseArgs when --dir is not supplied.
@@ -97,6 +103,7 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 	dir := fs.String("dir", "", "movie library root to enrich (required)")
 	dryRun := fs.Bool("dry-run", false, "report intended writes without modifying the filesystem")
 	force := fs.Bool("force", false, "re-fetch and overwrite existing NFO and artwork files")
+	concurrency := fs.Int("concurrency", defaultConcurrency, "number of folders to process in parallel")
 
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -106,12 +113,13 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 		return config{}, errMissingDir
 	}
 
-	return config{dir: *dir, dryRun: *dryRun, force: *force}, nil
+	return config{dir: *dir, dryRun: *dryRun, force: *force, concurrency: *concurrency}, nil
 }
 
 // run scans the library, writes a rich NFO per matched folder, and prints an
-// end-of-run summary to cfg.out. A single bad folder is recorded and never
-// aborts the run; a failure to scan the root is fatal and returned.
+// end-of-run summary to cfg.out. Folders are processed concurrently by a
+// bounded worker pool (cfg.concurrency); a single bad folder is recorded and
+// never aborts the run; a failure to scan the root is fatal and returned.
 func run(cfg config) error {
 	folders, err := library.Scan(cfg.dir)
 	if err != nil {
@@ -119,12 +127,28 @@ func run(cfg config) error {
 	}
 
 	var rep report.Report
-	for _, f := range folders {
-		processFolder(cfg, f, &rep)
-	}
+	processFolders(cfg, folders, &rep)
 
 	_, _ = fmt.Fprint(cfg.out, rep.Summary())
 	return nil
+}
+
+// processFolders runs processFolder over every folder, bounding the number in
+// flight to cfg.concurrency (a value below 1 means sequential). The report is
+// the only shared state and is safe for concurrent recording.
+func processFolders(cfg config, folders []library.MovieFolder, rep *report.Report) {
+	limit := max(cfg.concurrency, 1)
+
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for _, f := range folders {
+		sem <- struct{}{} // block once `limit` folders are in flight
+		wg.Go(func() {
+			defer func() { <-sem }()
+			processFolder(cfg, f, rep)
+		})
+	}
+	wg.Wait()
 }
 
 // processFolder parses one folder's name, resolves it against TMDB, and writes

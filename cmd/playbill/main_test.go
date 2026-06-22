@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/schmidtw/playbill/internal/artselect"
 	"github.com/schmidtw/playbill/internal/nfo"
@@ -227,12 +231,73 @@ func TestRun_MissingDirIsError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// concurrencyResolver is a thread-safe resolver that gates Resolve on a barrier
+// and tracks the peak number of folders resolved at once, so a test can assert
+// the worker pool both parallelizes and stays bounded.
+type concurrencyResolver struct {
+	release  chan struct{}
+	inFlight atomic.Int32
+	peak     atomic.Int32
+}
+
+func (c *concurrencyResolver) Resolve(tmdb.ResolveRequest) (nfo.Movie, error) {
+	n := c.inFlight.Add(1)
+	for {
+		old := c.peak.Load()
+		if n <= old || c.peak.CompareAndSwap(old, n) {
+			break
+		}
+	}
+	<-c.release // block until the test lets workers proceed
+	c.inFlight.Add(-1)
+	return nfo.Movie{Title: "M", Year: 2000}, nil
+}
+
+func (c *concurrencyResolver) Images(string) ([]artselect.Image, error) { return nil, nil }
+
+func TestRun_ProcessesFoldersConcurrentlyUpToLimit(t *testing.T) {
+	const folders, limit = 12, 3
+	root := t.TempDir()
+	for i := range folders {
+		mkVideo(t, root, fmt.Sprintf("Movie %02d (2000)", i))
+	}
+
+	cr := &concurrencyResolver{release: make(chan struct{})}
+
+	var out bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		require.NoError(t, run(config{dir: root, concurrency: limit, out: &out, resolver: cr}))
+	})
+
+	// Once the pool has saturated, peak must equal the limit — never exceed it.
+	assert.Eventually(t, func() bool { return cr.peak.Load() == limit }, time.Second, time.Millisecond,
+		"expected exactly %d folders resolving at once", limit)
+
+	close(cr.release) // let every worker finish
+	wg.Wait()
+
+	assert.LessOrEqual(t, cr.peak.Load(), int32(limit), "worker pool must not exceed --concurrency")
+	assert.Contains(t, out.String(), fmt.Sprintf("enriched: %d", folders), "every folder is still processed")
+}
+
 func TestParseArgs_DefaultsAndDir(t *testing.T) {
 	var errOut bytes.Buffer
 	cfg, err := parseArgs([]string{"--dir", "/movies"}, &errOut)
 	require.NoError(t, err)
 	assert.Equal(t, "/movies", cfg.dir)
 	assert.False(t, cfg.dryRun)
+}
+
+func TestParseArgs_Concurrency(t *testing.T) {
+	var errOut bytes.Buffer
+	cfg, err := parseArgs([]string{"--dir", "/movies"}, &errOut)
+	require.NoError(t, err)
+	assert.Equal(t, 4, cfg.concurrency, "default concurrency is 4")
+
+	cfg, err = parseArgs([]string{"--dir", "/movies", "--concurrency", "8"}, &errOut)
+	require.NoError(t, err)
+	assert.Equal(t, 8, cfg.concurrency)
 }
 
 func TestParseArgs_DryRun(t *testing.T) {
