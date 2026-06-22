@@ -1,6 +1,7 @@
 package tmdb
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -110,8 +111,15 @@ func (c *Client) movie(id string) (movieResponse, error) {
 }
 
 // get performs a GET against the API, decodes a JSON body into out, and turns a
-// non-2xx status into an error.
+// non-2xx status into an error. It first waits on the rate limiter so concurrent
+// callers stay within TMDB's request ceiling.
 func (c *Client) get(path string, q url.Values, out any) error {
+	if c.limiter != nil {
+		if err := c.limiter.Wait(context.Background()); err != nil {
+			return fmt.Errorf("tmdb: %s: rate limit: %w", path, err)
+		}
+	}
+
 	q.Set("api_key", c.apiKey)
 	endpoint := c.baseURL + path + "?" + q.Encode()
 

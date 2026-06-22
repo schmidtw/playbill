@@ -5,6 +5,7 @@ go 1.26.3
 require (
 	github.com/abema/go-mp4 v1.7.1
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/time v0.15.0
 )
 
 require (
