@@ -1,6 +1,7 @@
 // Command playbill walks a Kodi movie library and enriches each Movie Folder
-// in place. This walking skeleton scans for "Title (Year)" folders with a video
-// file and writes a minimal NFO; it runs fully non-interactively.
+// in place. It scans for "Title (Year)" folders with a video file, matches each
+// against TMDB, and writes a rich, MediaElch-style NFO; it runs fully
+// non-interactively. The TMDB API key is read from TMDB_API_KEY.
 package main
 
 import (
@@ -16,14 +17,22 @@ import (
 	"github.com/schmidtw/playbill/internal/nfo"
 	"github.com/schmidtw/playbill/internal/probe"
 	"github.com/schmidtw/playbill/internal/report"
+	"github.com/schmidtw/playbill/internal/tmdb"
 	"github.com/schmidtw/playbill/internal/writer"
 )
 
+// resolver turns a parsed folder name into the canonical, rich movie metadata.
+// *tmdb.Client satisfies it; tests inject fakes.
+type resolver interface {
+	Resolve(tmdb.ResolveRequest) (nfo.Movie, error)
+}
+
 // config holds the resolved run options.
 type config struct {
-	dir    string
-	dryRun bool
-	out    io.Writer
+	dir      string
+	dryRun   bool
+	out      io.Writer
+	resolver resolver
 }
 
 // errMissingDir is returned by parseArgs when --dir is not supplied.
@@ -43,11 +52,28 @@ func realMain(args []string, out, errOut io.Writer) int {
 	}
 	cfg.out = out
 
+	cfg.resolver, err = newResolver()
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+
 	if err := run(cfg); err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
 		return 1
 	}
 	return 0
+}
+
+// newResolver builds the TMDB client from the environment. The API key comes
+// from TMDB_API_KEY (a missing key is a clear fatal error); TMDB_BASE_URL
+// optionally overrides the API root.
+func newResolver() (resolver, error) {
+	var opts []tmdb.Option
+	if base := os.Getenv("TMDB_BASE_URL"); base != "" {
+		opts = append(opts, tmdb.WithBaseURL(base))
+	}
+	return tmdb.New(os.Getenv("TMDB_API_KEY"), opts...)
 }
 
 // parseArgs parses command-line flags into a config. Usage and parse errors are
@@ -70,7 +96,7 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 	return config{dir: *dir, dryRun: *dryRun}, nil
 }
 
-// run scans the library, writes a minimal NFO per matched folder, and prints an
+// run scans the library, writes a rich NFO per matched folder, and prints an
 // end-of-run summary to cfg.out. A single bad folder is recorded and never
 // aborts the run; a failure to scan the root is fatal and returned.
 func run(cfg config) error {
@@ -88,8 +114,9 @@ func run(cfg config) error {
 	return nil
 }
 
-// processFolder parses one folder's name and writes its NFO, recording the
-// outcome in rep.
+// processFolder parses one folder's name, resolves it against TMDB, and writes
+// its rich NFO, recording the outcome in rep. A folder whose name does not parse
+// or that has no confident TMDB match is skipped and reported, never guessed.
 func processFolder(cfg config, f library.MovieFolder, rep *report.Report) {
 	title, year, ok := nameparse.Parse(f.Name)
 	if !ok {
@@ -97,14 +124,26 @@ func processFolder(cfg config, f library.MovieFolder, rep *report.Report) {
 		return
 	}
 
-	sd := streamDetails(filepath.Join(f.Path, f.VideoFile))
-	data, err := nfo.Marshal(nfo.Movie{Title: title, Year: year, StreamDetails: sd})
+	nfoPath := filepath.Join(f.Path, f.Name+".nfo")
+	req := tmdb.ResolveRequest{Title: title, Year: year, KnownID: existingTMDBID(nfoPath)}
+
+	movie, err := cfg.resolver.Resolve(req)
+	if errors.Is(err, tmdb.ErrNoMatch) || errors.Is(err, tmdb.ErrAmbiguousMatch) {
+		rep.Unmatched(f.Name)
+		return
+	}
 	if err != nil {
 		rep.Errored(f.Name, err.Error())
 		return
 	}
 
-	nfoPath := filepath.Join(f.Path, f.Name+".nfo")
+	movie.StreamDetails = streamDetails(filepath.Join(f.Path, f.VideoFile))
+	data, err := nfo.Marshal(movie)
+	if err != nil {
+		rep.Errored(f.Name, err.Error())
+		return
+	}
+
 	res, err := writer.WriteNFO(nfoPath, data, cfg.dryRun)
 	if err != nil {
 		rep.Errored(f.Name, err.Error())
@@ -119,6 +158,20 @@ func processFolder(cfg config, f library.MovieFolder, rep *report.Report) {
 	case writer.Planned:
 		rep.Planned(f.Name)
 	}
+}
+
+// existingTMDBID returns the TMDB id recorded in an existing NFO at nfoPath, or
+// "" when there is no readable NFO with a tmdb unique id. A known id lets the
+// resolver trust a prior (possibly hand-corrected) match instead of searching.
+func existingTMDBID(nfoPath string) string {
+	data, err := os.ReadFile(nfoPath)
+	if err != nil {
+		return ""
+	}
+	if id, ok := nfo.TMDBID(data); ok {
+		return id
+	}
+	return ""
 }
 
 // streamDetails probes the video for Stream Details, mapping them into the NFO

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>The Matrix</title>
+  <originaltitle>The Matrix</originaltitle>
+  <sorttitle>Matrix</sorttitle>
+  <year>1999</year>
+  <ratings>
+    <rating name="themoviedb" max="10" default="true">
+      <value>8.2</value>
+      <votes>24149</votes>
+    </rating>
+  </ratings>
+  <plot>A computer hacker learns the true nature of reality.</plot>
+  <tagline>Welcome to the Real World.</tagline>
+  <runtime>136</runtime>
+  <mpaa>R</mpaa>
+  <premiered>1999-03-30</premiered>
+  <genre>Action</genre>
+  <genre>Science Fiction</genre>
+  <country>United States of America</country>
+  <studio>Warner Bros. Pictures</studio>
+  <studio>Village Roadshow Pictures</studio>
+  <set>
+    <name>The Matrix Collection</name>
+  </set>
+  <credits>Lana Wachowski</credits>
+  <credits>Lilly Wachowski</credits>
+  <director>Lana Wachowski</director>
+  <director>Lilly Wachowski</director>
+  <actor>
+    <name>Keanu Reeves</name>
+    <role>Neo</role>
+    <order>0</order>
+    <thumb>https://image.tmdb.org/t/p/original/a.jpg</thumb>
+  </actor>
+  <actor>
+    <name>Laurence Fishburne</name>
+    <role>Morpheus</role>
+    <order>1</order>
+    <thumb>https://image.tmdb.org/t/p/original/b.jpg</thumb>
+  </actor>
+  <trailer>plugin://plugin.video.youtube/?action=play_video&amp;videoid=vKQi3bBA1y8</trailer>
+  <uniqueid type="tmdb" default="true">603</uniqueid>
+  <uniqueid type="imdb">tt0133093</uniqueid>
+  <id>603</id>
+</movie>

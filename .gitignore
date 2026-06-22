@@ -18,6 +18,9 @@ coverage.txt
 .env
 *.local
 
+# Local automation runner (not part of the project)
+/ralph.sh
+
 # Editor / OS
 .idea/
 .vscode/
