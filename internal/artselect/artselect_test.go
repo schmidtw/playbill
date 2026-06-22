@@ -72,6 +72,22 @@ func TestSelect_Policy(t *testing.T) {
 			},
 		},
 		{
+			name:      "TMDB is chosen when Fanart.tv offers nothing for the type",
+			preferred: "en",
+			want:      "tmdb-only.png",
+			cands: []artselect.Image{
+				{Kind: artselect.Clearlogo, URL: "tmdb-only.png", Provider: artselect.ProviderTMDB, Language: "en", Popularity: 3},
+			},
+		},
+		{
+			name:      "Fanart.tv supplies a clearart candidate",
+			preferred: "en",
+			want:      "clearart.png",
+			cands: []artselect.Image{
+				{Kind: artselect.Clearart, URL: "clearart.png", Provider: artselect.ProviderFanart, Language: "en", Popularity: 7},
+			},
+		},
+		{
 			name:      "an otherwise-equal tie breaks on the lower URL",
 			preferred: "en",
 			want:      "a.jpg",
@@ -119,6 +135,18 @@ func TestSelect_OneBestPerKindSortedByKind(t *testing.T) {
 	assert.Equal(t, "p-hi.jpg", byKind[artselect.Poster])
 	assert.Equal(t, "f-hi.jpg", byKind[artselect.Fanart])
 	assert.Equal(t, "c.png", byKind[artselect.Clearlogo])
+}
+
+func TestSelect_ClearartOrdersAfterLandscape(t *testing.T) {
+	candidates := []artselect.Image{
+		{Kind: artselect.Clearart, URL: "clearart.png", Language: "en", Popularity: 1},
+		{Kind: artselect.Landscape, URL: "landscape.jpg", Language: "en", Popularity: 1},
+	}
+
+	got := artselect.Select(candidates, "en")
+	require.Len(t, got, 2)
+	assert.Equal(t, []artselect.Kind{artselect.Landscape, artselect.Clearart},
+		[]artselect.Kind{got[0].Kind, got[1].Kind}, "clearart sorts after the default art types")
 }
 
 func TestSelect_FullTieIsDeterministicAcrossInputOrder(t *testing.T) {

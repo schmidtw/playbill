@@ -23,6 +23,7 @@ const (
 	Clearlogo Kind = "clearlogo"
 	Discart   Kind = "discart"
 	Landscape Kind = "landscape"
+	Clearart  Kind = "clearart"
 )
 
 // Provider names the source of a candidate image. For art types both providers
@@ -58,6 +59,7 @@ var kindOrder = map[Kind]int{
 	Clearlogo: 3,
 	Discart:   4,
 	Landscape: 5,
+	Clearart:  6,
 }
 
 // Select picks the single best Image for each Kind present in candidates and
