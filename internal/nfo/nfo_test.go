@@ -24,6 +24,46 @@ func TestMarshal_Minimal(t *testing.T) {
 	assert.Equal(t, string(want), string(got))
 }
 
+func TestMarshal_Rich(t *testing.T) {
+	m := nfo.Movie{
+		Title:         "The Matrix",
+		OriginalTitle: "The Matrix",
+		SortTitle:     "Matrix",
+		Year:          1999,
+		Premiered:     "1999-03-30",
+		Runtime:       136,
+		Plot:          "A computer hacker learns the true nature of reality.",
+		Tagline:       "Welcome to the Real World.",
+		MPAA:          "R",
+		Genres:        []string{"Action", "Science Fiction"},
+		Countries:     []string{"United States of America"},
+		Studios:       []string{"Warner Bros. Pictures", "Village Roadshow Pictures"},
+		Set:           "The Matrix Collection",
+		Directors:     []string{"Lana Wachowski", "Lilly Wachowski"},
+		Writers:       []string{"Lana Wachowski", "Lilly Wachowski"},
+		Ratings: []nfo.Rating{
+			{Name: "themoviedb", Max: 10, Default: true, Value: 8.2, Votes: 24149},
+		},
+		Actors: []nfo.Actor{
+			{Name: "Keanu Reeves", Role: "Neo", Order: 0, Thumb: "https://image.tmdb.org/t/p/original/a.jpg"},
+			{Name: "Laurence Fishburne", Role: "Morpheus", Order: 1, Thumb: "https://image.tmdb.org/t/p/original/b.jpg"},
+		},
+		Trailer: "plugin://plugin.video.youtube/?action=play_video&videoid=vKQi3bBA1y8",
+		UniqueIDs: []nfo.UniqueID{
+			{Type: "tmdb", Default: true, Value: "603"},
+			{Type: "imdb", Value: "tt0133093"},
+		},
+	}
+
+	got, err := nfo.Marshal(m)
+	require.NoError(t, err)
+
+	want, err := os.ReadFile("testdata/rich.nfo")
+	require.NoError(t, err)
+
+	assert.Equal(t, string(want), string(got))
+}
+
 func TestMarshal_UniqueIDsAndLegacyID(t *testing.T) {
 	m := nfo.Movie{
 		Title: "The Matrix",
