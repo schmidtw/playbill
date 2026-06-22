@@ -18,7 +18,17 @@ const xmlHeader = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` + "\
 type Movie struct {
 	Title         string
 	Year          int
+	UniqueIDs     []UniqueID
 	StreamDetails *StreamDetails
+}
+
+// UniqueID is a provider identity written as <uniqueid type="..."> in the NFO.
+// Exactly one should be marked Default; its value is also mirrored into the
+// legacy <id> element for older Kodi skins.
+type UniqueID struct {
+	Type    string
+	Default bool
+	Value   string
 }
 
 // StreamDetails holds the technical media facts read from the video file. It
@@ -48,10 +58,18 @@ type AudioStream struct {
 // movieXML is the on-disk <movie> element. Element order is fixed so output is
 // deterministic and golden-file testable.
 type movieXML struct {
-	XMLName  xml.Name     `xml:"movie"`
-	Title    string       `xml:"title"`
-	Year     int          `xml:"year"`
-	FileInfo *fileInfoXML `xml:"fileinfo,omitempty"`
+	XMLName   xml.Name      `xml:"movie"`
+	Title     string        `xml:"title"`
+	Year      int           `xml:"year"`
+	UniqueIDs []uniqueIDXML `xml:"uniqueid"`
+	ID        string        `xml:"id,omitempty"`
+	FileInfo  *fileInfoXML  `xml:"fileinfo,omitempty"`
+}
+
+type uniqueIDXML struct {
+	Type    string `xml:"type,attr"`
+	Default string `xml:"default,attr,omitempty"`
+	Value   string `xml:",chardata"`
 }
 
 type fileInfoXML struct {
@@ -82,9 +100,11 @@ type audioXML struct {
 // with a trailing newline.
 func Marshal(m Movie) ([]byte, error) {
 	doc := movieXML{
-		Title:    m.Title,
-		Year:     m.Year,
-		FileInfo: fileInfo(m.StreamDetails),
+		Title:     m.Title,
+		Year:      m.Year,
+		UniqueIDs: uniqueIDs(m.UniqueIDs),
+		ID:        legacyID(m.UniqueIDs),
+		FileInfo:  fileInfo(m.StreamDetails),
 	}
 
 	body, err := xml.MarshalIndent(doc, "", "  ")
@@ -98,6 +118,31 @@ func Marshal(m Movie) ([]byte, error) {
 	buf.WriteByte('\n')
 
 	return buf.Bytes(), nil
+}
+
+// uniqueIDs maps the canonical unique IDs to their XML form, rendering the
+// default="true" attribute only for the default entry.
+func uniqueIDs(ids []UniqueID) []uniqueIDXML {
+	out := make([]uniqueIDXML, 0, len(ids))
+	for _, id := range ids {
+		x := uniqueIDXML{Type: id.Type, Value: id.Value}
+		if id.Default {
+			x.Default = "true"
+		}
+		out = append(out, x)
+	}
+	return out
+}
+
+// legacyID returns the value of the default unique ID, mirrored into the legacy
+// <id> element. It is empty when no unique ID is marked default.
+func legacyID(ids []UniqueID) string {
+	for _, id := range ids {
+		if id.Default {
+			return id.Value
+		}
+	}
+	return ""
 }
 
 // fileInfo maps the canonical StreamDetails to its XML form, or nil when there
