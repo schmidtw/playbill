@@ -8,74 +8,87 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSelect_SingleCandidateIsChosen(t *testing.T) {
-	candidates := []artselect.Image{
-		{Kind: artselect.Poster, URL: "p1.jpg"},
+// TestSelect_Policy is the table-driven exercise of the selection policy: each
+// case offers several candidates of one art type and names the URL that must
+// win. The policy keys, in order, are preferred language, provider precedence,
+// popularity, resolution, and finally the lower URL.
+func TestSelect_Policy(t *testing.T) {
+	tests := []struct {
+		name      string
+		preferred string
+		want      string // winning URL, or "" to expect no selection
+		cands     []artselect.Image
+	}{
+		{
+			name: "lone candidate is chosen",
+			want: "p1.jpg",
+			cands: []artselect.Image{
+				{Kind: artselect.Poster, URL: "p1.jpg"},
+			},
+		},
+		{
+			name:      "preferred language beats a more popular, higher-res foreign image",
+			preferred: "en",
+			want:      "en.jpg",
+			cands: []artselect.Image{
+				{Kind: artselect.Poster, URL: "de.jpg", Language: "de", Popularity: 99, Width: 4000, Height: 6000},
+				{Kind: artselect.Poster, URL: "en.jpg", Language: "en", Popularity: 1, Width: 100, Height: 150},
+			},
+		},
+		{
+			name:      "language-neutral image beats a foreign-language one",
+			preferred: "en",
+			want:      "neutral.jpg",
+			cands: []artselect.Image{
+				{Kind: artselect.Poster, URL: "de.jpg", Language: "de", Popularity: 99},
+				{Kind: artselect.Poster, URL: "neutral.jpg", Language: "", Popularity: 1},
+			},
+		},
+		{
+			name:      "popularity breaks a language tie over resolution",
+			preferred: "en",
+			want:      "high.jpg",
+			cands: []artselect.Image{
+				{Kind: artselect.Poster, URL: "low.jpg", Language: "en", Popularity: 5, Width: 4000, Height: 6000},
+				{Kind: artselect.Poster, URL: "high.jpg", Language: "en", Popularity: 50, Width: 100, Height: 150},
+			},
+		},
+		{
+			name:      "resolution breaks a popularity tie",
+			preferred: "en",
+			want:      "big.jpg",
+			cands: []artselect.Image{
+				{Kind: artselect.Poster, URL: "small.jpg", Language: "en", Popularity: 10, Width: 1000, Height: 1500},
+				{Kind: artselect.Poster, URL: "big.jpg", Language: "en", Popularity: 10, Width: 2000, Height: 3000},
+			},
+		},
+		{
+			name:      "Fanart.tv outranks TMDB for a shared art type",
+			preferred: "en",
+			want:      "fanart.png",
+			cands: []artselect.Image{
+				{Kind: artselect.Clearlogo, URL: "tmdb.png", Provider: artselect.ProviderTMDB, Language: "en", Popularity: 99, Width: 4000, Height: 2000},
+				{Kind: artselect.Clearlogo, URL: "fanart.png", Provider: artselect.ProviderFanart, Language: "en", Popularity: 1, Width: 400, Height: 200},
+			},
+		},
+		{
+			name:      "an otherwise-equal tie breaks on the lower URL",
+			preferred: "en",
+			want:      "a.jpg",
+			cands: []artselect.Image{
+				{Kind: artselect.Poster, URL: "b.jpg", Provider: artselect.ProviderTMDB, Language: "en", Popularity: 5, Width: 100, Height: 150},
+				{Kind: artselect.Poster, URL: "a.jpg", Provider: artselect.ProviderTMDB, Language: "en", Popularity: 5, Width: 100, Height: 150},
+			},
+		},
 	}
 
-	got := artselect.Select(candidates, "en")
-	require.Len(t, got, 1)
-	assert.Equal(t, "p1.jpg", got[0].URL)
-	assert.Equal(t, artselect.Poster, got[0].Kind)
-}
-
-func TestSelect_PrefersPreferredLanguage(t *testing.T) {
-	candidates := []artselect.Image{
-		// A more popular, higher-res image in the wrong language must still
-		// lose to the preferred-language one: language is the first key.
-		{Kind: artselect.Poster, URL: "de.jpg", Language: "de", Popularity: 99, Width: 4000, Height: 6000},
-		{Kind: artselect.Poster, URL: "en.jpg", Language: "en", Popularity: 1, Width: 100, Height: 150},
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := artselect.Select(tt.cands, tt.preferred)
+			require.Len(t, got, 1)
+			assert.Equal(t, tt.want, got[0].URL)
+		})
 	}
-
-	got := artselect.Select(candidates, "en")
-	require.Len(t, got, 1)
-	assert.Equal(t, "en.jpg", got[0].URL)
-}
-
-func TestSelect_PopularityBreaksLanguageTie(t *testing.T) {
-	candidates := []artselect.Image{
-		{Kind: artselect.Poster, URL: "low.jpg", Language: "en", Popularity: 5, Width: 4000, Height: 6000},
-		{Kind: artselect.Poster, URL: "high.jpg", Language: "en", Popularity: 50, Width: 100, Height: 150},
-	}
-
-	got := artselect.Select(candidates, "en")
-	require.Len(t, got, 1)
-	assert.Equal(t, "high.jpg", got[0].URL, "same language: higher popularity wins over higher resolution")
-}
-
-func TestSelect_ResolutionBreaksPopularityTie(t *testing.T) {
-	candidates := []artselect.Image{
-		{Kind: artselect.Poster, URL: "small.jpg", Language: "en", Popularity: 10, Width: 1000, Height: 1500},
-		{Kind: artselect.Poster, URL: "big.jpg", Language: "en", Popularity: 10, Width: 2000, Height: 3000},
-	}
-
-	got := artselect.Select(candidates, "en")
-	require.Len(t, got, 1)
-	assert.Equal(t, "big.jpg", got[0].URL, "same language and popularity: higher resolution wins")
-}
-
-func TestSelect_FanartProviderPreferredOverTMDB(t *testing.T) {
-	candidates := []artselect.Image{
-		// Same language: provider precedence outranks popularity/resolution,
-		// because scores are not comparable across providers.
-		{Kind: artselect.Clearlogo, URL: "tmdb.png", Provider: artselect.ProviderTMDB, Language: "en", Popularity: 99, Width: 4000, Height: 2000},
-		{Kind: artselect.Clearlogo, URL: "fanart.png", Provider: artselect.ProviderFanart, Language: "en", Popularity: 1, Width: 400, Height: 200},
-	}
-
-	got := artselect.Select(candidates, "en")
-	require.Len(t, got, 1)
-	assert.Equal(t, "fanart.png", got[0].URL, "Fanart.tv is preferred over TMDB for a shared art type")
-}
-
-func TestSelect_PrefersNeutralOverForeignLanguage(t *testing.T) {
-	candidates := []artselect.Image{
-		{Kind: artselect.Poster, URL: "de.jpg", Language: "de", Popularity: 99},
-		{Kind: artselect.Poster, URL: "neutral.jpg", Language: "", Popularity: 1},
-	}
-
-	got := artselect.Select(candidates, "en")
-	require.Len(t, got, 1)
-	assert.Equal(t, "neutral.jpg", got[0].URL, "a language-neutral image beats a wrong-language one")
 }
 
 func TestSelect_EmptyCandidates(t *testing.T) {
