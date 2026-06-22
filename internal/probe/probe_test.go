@@ -53,6 +53,19 @@ func TestProbe_UnsupportedContainer(t *testing.T) {
 	assert.ErrorIs(t, err, probe.ErrUnsupportedContainer)
 }
 
+func TestMKVProber_MissingFile(t *testing.T) {
+	_, err := probe.MKVProber{}.Probe("testdata/does-not-exist.mkv")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, probe.ErrUnsupportedContainer)
+}
+
+// A file that is not Matroska must fail cleanly (an error the caller treats as
+// best-effort skip), never panic or return bogus stream details.
+func TestMKVProber_NotMatroska(t *testing.T) {
+	_, err := probe.MKVProber{}.Probe("testdata/sample.m4v")
+	require.Error(t, err)
+}
+
 func TestMP4Prober_MissingFile(t *testing.T) {
 	_, err := probe.MP4Prober{}.Probe("testdata/does-not-exist.m4v")
 	require.Error(t, err)
