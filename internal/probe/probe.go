@@ -2,9 +2,9 @@
 // type, audio tracks/languages/channels, duration) directly from a movie's
 // video file, with no external program — see ADR-0002.
 //
-// Probing is pure Go. v1 understands MP4/M4V containers; any other container
-// returns ErrUnsupportedContainer so the caller can skip it and report it
-// rather than failing the run.
+// Probing is pure Go. v1 understands MP4/M4V and MKV/Matroska containers; any
+// other container returns ErrUnsupportedContainer so the caller can skip it and
+// report it rather than failing the run.
 package probe
 
 import (
@@ -56,6 +56,8 @@ func Probe(path string) (StreamDetails, error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".mp4", ".m4v":
 		return MP4Prober{}.Probe(path)
+	case ".mkv":
+		return MKVProber{}.Probe(path)
 	default:
 		return StreamDetails{}, ErrUnsupportedContainer
 	}
