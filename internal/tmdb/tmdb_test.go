@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/schmidtw/playbill/internal/artselect"
 	"github.com/schmidtw/playbill/internal/nfo"
 	"github.com/schmidtw/playbill/internal/tmdb"
 	"github.com/stretchr/testify/assert"
@@ -262,6 +263,73 @@ func TestResolve_MinimalDetailsDegradesGracefully(t *testing.T) {
 	assert.Equal(t, "plugin://plugin.video.youtube/?action=play_video&videoid=clipkey", m.Trailer)
 	require.Len(t, m.UniqueIDs, 1, "only the tmdb id when no imdb id")
 	assert.Equal(t, "tmdb", m.UniqueIDs[0].Type)
+}
+
+// imagesBody is a /movie/{id}/images payload with posters, backdrops, and logos
+// across a few languages and sizes.
+const imagesBody = `{
+  "posters": [
+    {"file_path": "/poster-en.jpg", "iso_639_1": "en", "vote_average": 5.0, "width": 2000, "height": 3000},
+    {"file_path": "/poster-de.jpg", "iso_639_1": "de", "vote_average": 9.0, "width": 4000, "height": 6000}
+  ],
+  "backdrops": [
+    {"file_path": "/fanart.jpg", "iso_639_1": null, "vote_average": 7.0, "width": 1920, "height": 1080}
+  ],
+  "logos": [
+    {"file_path": "/logo.png", "iso_639_1": "en", "vote_average": 3.0, "width": 800, "height": 310}
+  ]
+}`
+
+func fakeTMDBImages(t *testing.T, images string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/images") {
+			_, _ = w.Write([]byte(images))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestImages_MapsCandidatesWithKindProviderAndURL(t *testing.T) {
+	srv := fakeTMDBImages(t, imagesBody)
+	c, err := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	got, err := c.Images("603")
+	require.NoError(t, err)
+
+	byURL := map[string]artselect.Image{}
+	for _, img := range got {
+		byURL[img.URL] = img
+	}
+
+	poster := byURL["https://image.tmdb.org/t/p/original/poster-de.jpg"]
+	assert.Equal(t, artselect.Poster, poster.Kind)
+	assert.Equal(t, artselect.ProviderTMDB, poster.Provider)
+	assert.Equal(t, "de", poster.Language)
+	assert.InDelta(t, 9.0, poster.Popularity, 0.001)
+	assert.Equal(t, 4000, poster.Width)
+	assert.Equal(t, 6000, poster.Height)
+
+	assert.Equal(t, artselect.Fanart, byURL["https://image.tmdb.org/t/p/original/fanart.jpg"].Kind)
+	assert.Empty(t, byURL["https://image.tmdb.org/t/p/original/fanart.jpg"].Language, "null language maps to neutral")
+	assert.Equal(t, artselect.Clearlogo, byURL["https://image.tmdb.org/t/p/original/logo.png"].Kind)
+
+	assert.Len(t, got, 4)
+}
+
+func TestImages_HTTPErrorIsReturned(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	c, _ := tmdb.New("key", tmdb.WithBaseURL(srv.URL))
+
+	_, err := c.Images("603")
+	require.Error(t, err)
 }
 
 func TestResolve_IMDBIDFallsBackToExternalIDs(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/schmidtw/playbill/internal/artselect"
 	"github.com/schmidtw/playbill/internal/nfo"
 	"github.com/schmidtw/playbill/internal/tmdb"
 	"github.com/stretchr/testify/assert"
@@ -17,14 +18,22 @@ import (
 // fakeResolver is an injectable resolver. It records the last request it saw and
 // returns a canned movie (or error) so run() can be tested without a network.
 type fakeResolver struct {
-	movie   nfo.Movie
-	err     error
-	lastReq tmdb.ResolveRequest
+	movie     nfo.Movie
+	err       error
+	lastReq   tmdb.ResolveRequest
+	images    []artselect.Image
+	imagesErr error
+	lastID    string
 }
 
 func (f *fakeResolver) Resolve(req tmdb.ResolveRequest) (nfo.Movie, error) {
 	f.lastReq = req
 	return f.movie, f.err
+}
+
+func (f *fakeResolver) Images(id string) ([]artselect.Image, error) {
+	f.lastID = id
+	return f.images, f.imagesErr
 }
 
 // matrixResolver returns a resolver yielding a minimal rich movie for tests that
@@ -231,6 +240,105 @@ func TestParseArgs_DryRun(t *testing.T) {
 	cfg, err := parseArgs([]string{"--dir", "/movies", "--dry-run"}, &errOut)
 	require.NoError(t, err)
 	assert.True(t, cfg.dryRun)
+}
+
+func TestParseArgs_Force(t *testing.T) {
+	var errOut bytes.Buffer
+	cfg, err := parseArgs([]string{"--dir", "/movies"}, &errOut)
+	require.NoError(t, err)
+	assert.False(t, cfg.force, "force defaults to off")
+
+	cfg, err = parseArgs([]string{"--dir", "/movies", "--force"}, &errOut)
+	require.NoError(t, err)
+	assert.True(t, cfg.force)
+}
+
+// imageServer serves a one-pixel body for any request and records the paths it
+// was asked for, so a test can assert which art URLs were downloaded.
+func imageServer(t *testing.T) (*httptest.Server, *[]string) {
+	t.Helper()
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		_, _ = w.Write([]byte("img"))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &paths
+}
+
+func TestRun_DownloadsSelectedArtWithKodiNaming(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+
+	srv, paths := imageServer(t)
+	fr := matrixResolver()
+	fr.images = []artselect.Image{
+		{Kind: artselect.Poster, Provider: artselect.ProviderTMDB, URL: srv.URL + "/poster.jpg", Language: "en", Popularity: 9},
+		{Kind: artselect.Poster, Provider: artselect.ProviderTMDB, URL: srv.URL + "/poster-lo.jpg", Language: "en", Popularity: 1},
+		{Kind: artselect.Fanart, Provider: artselect.ProviderTMDB, URL: srv.URL + "/fanart.jpg", Language: "", Popularity: 5},
+		{Kind: artselect.Clearlogo, Provider: artselect.ProviderTMDB, URL: srv.URL + "/logo.png", Language: "en", Popularity: 5},
+	}
+
+	var out bytes.Buffer
+	require.NoError(t, run(config{dir: root, out: &out, resolver: fr, client: srv.Client()}))
+
+	dir := filepath.Join(root, "The Matrix (1999)")
+	for _, name := range []string{
+		"The Matrix (1999)-poster.jpg",
+		"The Matrix (1999)-fanart.jpg",
+		"The Matrix (1999)-clearlogo.png",
+	} {
+		_, err := os.Stat(filepath.Join(dir, name))
+		assert.NoError(t, err, "expected art file %s", name)
+	}
+
+	// Exactly one image per art type is downloaded: the low-popularity poster
+	// is never fetched.
+	assert.ElementsMatch(t, []string{"/poster.jpg", "/fanart.jpg", "/logo.png"}, *paths)
+	assert.Equal(t, "603", fr.lastID, "art is fetched for the resolved tmdb id")
+}
+
+func TestRun_ExistingArtSkippedUnlessForce(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+	dir := filepath.Join(root, "The Matrix (1999)")
+	posterPath := filepath.Join(dir, "The Matrix (1999)-poster.jpg")
+	require.NoError(t, os.WriteFile(posterPath, []byte("hand-tuned"), 0o644))
+
+	srv, _ := imageServer(t)
+	fr := matrixResolver()
+	fr.images = []artselect.Image{
+		{Kind: artselect.Poster, Provider: artselect.ProviderTMDB, URL: srv.URL + "/poster.jpg", Language: "en", Popularity: 9},
+	}
+
+	// Default run: the existing poster is preserved.
+	require.NoError(t, run(config{dir: root, out: &bytes.Buffer{}, resolver: fr, client: srv.Client()}))
+	got, err := os.ReadFile(posterPath)
+	require.NoError(t, err)
+	assert.Equal(t, "hand-tuned", string(got), "existing art is left untouched without --force")
+
+	// Force run: the poster is re-downloaded and overwritten.
+	require.NoError(t, run(config{dir: root, force: true, out: &bytes.Buffer{}, resolver: fr, client: srv.Client()}))
+	got, err = os.ReadFile(posterPath)
+	require.NoError(t, err)
+	assert.Equal(t, "img", string(got), "--force re-fetches and overwrites existing art")
+}
+
+func TestRun_DryRunDownloadsNoArt(t *testing.T) {
+	root := t.TempDir()
+	mkVideo(t, root, "The Matrix (1999)")
+
+	srv, paths := imageServer(t)
+	fr := matrixResolver()
+	fr.images = []artselect.Image{
+		{Kind: artselect.Poster, Provider: artselect.ProviderTMDB, URL: srv.URL + "/poster.jpg", Language: "en", Popularity: 9},
+	}
+
+	require.NoError(t, run(config{dir: root, dryRun: true, out: &bytes.Buffer{}, resolver: fr, client: srv.Client()}))
+
+	_, statErr := os.Stat(filepath.Join(root, "The Matrix (1999)", "The Matrix (1999)-poster.jpg"))
+	assert.True(t, os.IsNotExist(statErr), "dry-run must not write art")
+	assert.Empty(t, *paths, "dry-run must not download art")
 }
 
 func TestParseArgs_MissingDir(t *testing.T) {
