@@ -27,6 +27,11 @@ import (
 	"github.com/schmidtw/playbill/internal/writer"
 )
 
+// version is the build version, stamped at link time via
+// -ldflags "-X main.version=...". It defaults to "dev" for un-stamped builds
+// (e.g. plain `go build` or `go run`).
+var version = "dev"
+
 // preferredLang is the language used to rank artwork. Folder names and metadata
 // in this library are English; a configurable preference is a later concern.
 const preferredLang = "en"
@@ -80,6 +85,9 @@ type config struct {
 	dryRun      bool
 	force       bool
 	json        bool
+	// showVersion is set by --version; realMain prints the build version and
+	// exits without scanning a library.
+	showVersion bool
 	concurrency int
 	art         []artselect.Kind
 	out         io.Writer
@@ -116,6 +124,10 @@ func realMain(args []string, out, errOut io.Writer) int {
 	cfg, err := parseArgs(args, errOut)
 	if err != nil {
 		return exitUsage
+	}
+	if cfg.showVersion {
+		_, _ = fmt.Fprintln(out, "playbill", version)
+		return exitOK
 	}
 	cfg.out = out
 	cfg.client = &http.Client{Timeout: 30 * time.Second}
@@ -182,9 +194,13 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 	concurrency := fs.Int("concurrency", defaultConcurrency, "number of folders to process in parallel")
 	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON report instead of the text summary")
 	art := fs.String("art", "", "comma-separated art types to fetch (default: poster,fanart,banner,clearlogo,discart,landscape)")
+	showVersion := fs.Bool("version", false, "print the build version and exit")
 
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
+	}
+	if *showVersion {
+		return config{showVersion: true}, nil
 	}
 	if *dir == "" {
 		_, _ = fmt.Fprintln(errOut, "error: --dir is required")

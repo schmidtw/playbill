@@ -721,6 +721,13 @@ func TestRealMain_MissingAPIKeyReturnsOne(t *testing.T) {
 	assert.Contains(t, errOut.String(), "TMDB_API_KEY")
 }
 
+func TestRealMain_VersionFlagPrintsVersionAndReturnsZero(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := realMain([]string{"--version"}, &out, &errOut)
+	assert.Equal(t, 0, code, "--version is an informational query, not an error")
+	assert.Contains(t, out.String(), version, "the build version is printed to stdout")
+}
+
 func TestRealMain_BadUsageReturnsTwo(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := realMain([]string{}, &out, &errOut)
