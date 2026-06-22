@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/schmidtw/playbill/internal/artselect"
+	"github.com/schmidtw/playbill/internal/fanart"
 	"github.com/schmidtw/playbill/internal/library"
 	"github.com/schmidtw/playbill/internal/nameparse"
 	"github.com/schmidtw/playbill/internal/nfo"
@@ -33,11 +35,42 @@ const preferredLang = "en"
 // --concurrency is not given (see the PRD: bounded worker pool, default 4).
 const defaultConcurrency = 4
 
+// defaultArtSet is the art set written when --art is not given: the layout the
+// PRD reproduces (user story 18). Clearart is available via --art but not part
+// of the default set.
+var defaultArtSet = []artselect.Kind{
+	artselect.Poster, artselect.Fanart, artselect.Banner,
+	artselect.Clearlogo, artselect.Discart, artselect.Landscape,
+}
+
+// knownArtKinds is every art type --art accepts, so an unknown type is rejected
+// up front rather than silently fetching nothing.
+var knownArtKinds = map[artselect.Kind]bool{
+	artselect.Poster: true, artselect.Fanart: true, artselect.Banner: true,
+	artselect.Clearlogo: true, artselect.Discart: true, artselect.Landscape: true,
+	artselect.Clearart: true,
+}
+
+// fanartOnlyKinds are art types only Fanart.tv supplies. Without a Fanart.tv
+// key they can never be fetched, so a missing one is reported as skipped-no-key
+// rather than unavailable.
+var fanartOnlyKinds = map[artselect.Kind]bool{
+	artselect.Banner: true, artselect.Discart: true,
+	artselect.Landscape: true, artselect.Clearart: true,
+}
+
 // resolver turns a parsed folder name into the canonical, rich movie metadata
 // and supplies its baseline artwork candidates. *tmdb.Client satisfies it;
 // tests inject fakes.
 type resolver interface {
 	Resolve(tmdb.ResolveRequest) (nfo.Movie, error)
+	Images(id string) ([]artselect.Image, error)
+}
+
+// artProvider supplies artwork candidates for a movie id. Both *tmdb.Client and
+// *fanart.Client satisfy it; the Fanart.tv provider is optional and left nil
+// when no key is configured.
+type artProvider interface {
 	Images(id string) ([]artselect.Image, error)
 }
 
@@ -48,9 +81,13 @@ type config struct {
 	force       bool
 	json        bool
 	concurrency int
+	art         []artselect.Kind
 	out         io.Writer
 	client      *http.Client
 	resolver    resolver
+	// fanart is the optional Fanart.tv provider, nil when FANARTTV_API_KEY is
+	// unset so extended art degrades gracefully (user story 14).
+	fanart artProvider
 	// report, when non-nil, is where run accumulates per-folder outcomes so the
 	// caller can inspect the run for its exit code. run creates its own when nil.
 	report *report.Report
@@ -89,6 +126,7 @@ func realMain(args []string, out, errOut io.Writer) int {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
 		return exitFatal
 	}
+	cfg.fanart = newFanart()
 
 	if err := run(cfg); err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
@@ -111,6 +149,27 @@ func newResolver() (resolver, error) {
 	return tmdb.New(os.Getenv("TMDB_API_KEY"), opts...)
 }
 
+// newFanart builds the optional Fanart.tv provider from the environment. With
+// no FANARTTV_API_KEY it returns a nil provider so the extended art types
+// degrade gracefully and the run still succeeds (user story 14). The key comes
+// from FANARTTV_API_KEY; FANARTTV_BASE_URL optionally overrides the API root.
+func newFanart() artProvider {
+	key := os.Getenv("FANARTTV_API_KEY")
+	if key == "" {
+		return nil
+	}
+
+	var opts []fanart.Option
+	if base := os.Getenv("FANARTTV_BASE_URL"); base != "" {
+		opts = append(opts, fanart.WithBaseURL(base))
+	}
+	c, err := fanart.New(key, opts...)
+	if err != nil {
+		return nil // New only fails on an empty key, already handled above
+	}
+	return c
+}
+
 // parseArgs parses command-line flags into a config. Usage and parse errors are
 // written to errOut. The returned config has a nil out; the caller wires the
 // destination writer.
@@ -122,6 +181,7 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 	force := fs.Bool("force", false, "re-fetch and overwrite existing NFO and artwork files")
 	concurrency := fs.Int("concurrency", defaultConcurrency, "number of folders to process in parallel")
 	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON report instead of the text summary")
+	art := fs.String("art", "", "comma-separated art types to fetch (default: poster,fanart,banner,clearlogo,discart,landscape)")
 
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -131,7 +191,35 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 		return config{}, errMissingDir
 	}
 
-	return config{dir: *dir, dryRun: *dryRun, force: *force, concurrency: *concurrency, json: *jsonOut}, nil
+	artSet, err := parseArtSet(*art)
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return config{}, err
+	}
+
+	return config{dir: *dir, dryRun: *dryRun, force: *force, concurrency: *concurrency, json: *jsonOut, art: artSet}, nil
+}
+
+// parseArtSet turns a --art value into the ordered list of art types to fetch.
+// An empty value yields the default set; an unknown type is an error so a typo
+// fails fast instead of silently fetching nothing (user story 19).
+func parseArtSet(raw string) ([]artselect.Kind, error) {
+	if strings.TrimSpace(raw) == "" {
+		return defaultArtSet, nil
+	}
+
+	var kinds []artselect.Kind
+	for tok := range strings.SplitSeq(raw, ",") {
+		kind := artselect.Kind(strings.TrimSpace(tok))
+		if kind == "" {
+			continue
+		}
+		if !knownArtKinds[kind] {
+			return nil, fmt.Errorf("unknown art type %q", kind)
+		}
+		kinds = append(kinds, kind)
+	}
+	return kinds, nil
 }
 
 // run scans the library, writes a rich NFO per matched folder, and prints an
@@ -234,27 +322,93 @@ func processFolder(cfg config, f library.MovieFolder, rep *report.Report) {
 	downloadArt(cfg, f, movie, rep)
 }
 
-// downloadArt selects the baseline artwork for a resolved movie and downloads
-// one best image per art type into the folder with Kodi naming. It is best-
-// effort: a failure to list or fetch art is recorded and never aborts the run,
-// so missing artwork does not cost the folder its NFO.
+// downloadArt selects the best image for each wanted art type from TMDB and the
+// optional Fanart.tv provider and downloads it into the folder with Kodi naming.
+// It is best-effort: a failure to list or fetch art is recorded and never aborts
+// the run, so missing artwork does not cost the folder its NFO. Wanted types
+// that no provider had are reported, distinguishing art skipped for lack of a
+// Fanart.tv key from art genuinely unavailable for the movie.
 func downloadArt(cfg config, f library.MovieFolder, movie nfo.Movie, rep *report.Report) {
 	id := defaultUniqueID(movie.UniqueIDs, "tmdb")
 	if id == "" {
 		return
 	}
 
-	candidates, err := cfg.resolver.Images(id)
-	if err != nil {
-		rep.Errored(f.Name, "artwork: "+err.Error())
-		return
+	wanted := cfg.art
+	if len(wanted) == 0 {
+		wanted = defaultArtSet
 	}
 
-	for _, img := range artselect.Select(candidates, preferredLang) {
+	candidates, ok := gatherArt(cfg, f, id, rep)
+	if !ok {
+		return // a provider failure was recorded; do not also report types missing
+	}
+
+	have := map[artselect.Kind]bool{}
+	for _, img := range artselect.Select(wantedOnly(candidates, wanted), preferredLang) {
+		have[img.Kind] = true
 		name := f.Name + "-" + string(img.Kind) + imageExt(img.URL)
 		path := filepath.Join(f.Path, name)
 		if _, err := writer.WriteArt(cfg.client, path, img.URL, cfg.force, cfg.dryRun); err != nil {
 			rep.Errored(f.Name, "artwork "+string(img.Kind)+": "+err.Error())
+		}
+	}
+
+	reportMissingArt(cfg, f.Name, wanted, have, rep)
+}
+
+// gatherArt collects artwork candidates from TMDB and, when configured, the
+// optional Fanart.tv provider. It returns ok=false when the required TMDB lookup
+// fails (the error is recorded); a Fanart.tv failure is recorded but does not
+// stop the run from using TMDB's art.
+func gatherArt(cfg config, f library.MovieFolder, id string, rep *report.Report) ([]artselect.Image, bool) {
+	candidates, err := cfg.resolver.Images(id)
+	if err != nil {
+		rep.Errored(f.Name, "artwork: "+err.Error())
+		return nil, false
+	}
+
+	if cfg.fanart != nil {
+		extra, err := cfg.fanart.Images(id)
+		if err != nil {
+			rep.Errored(f.Name, "fanart artwork: "+err.Error())
+		} else {
+			candidates = append(candidates, extra...)
+		}
+	}
+	return candidates, true
+}
+
+// wantedOnly keeps just the candidates whose art type is in the wanted set, so
+// --art controls which types are even considered for selection.
+func wantedOnly(candidates []artselect.Image, wanted []artselect.Kind) []artselect.Image {
+	want := map[artselect.Kind]bool{}
+	for _, k := range wanted {
+		want[k] = true
+	}
+
+	var out []artselect.Image
+	for _, img := range candidates {
+		if want[img.Kind] {
+			out = append(out, img)
+		}
+	}
+	return out
+}
+
+// reportMissingArt records every wanted art type for which no provider had a
+// candidate, distinguishing a type skipped for lack of a Fanart.tv key (only
+// Fanart.tv supplies it and none is configured) from one unavailable for the
+// movie.
+func reportMissingArt(cfg config, folder string, wanted []artselect.Kind, have map[artselect.Kind]bool, rep *report.Report) {
+	for _, k := range wanted {
+		if have[k] {
+			continue
+		}
+		if cfg.fanart == nil && fanartOnlyKinds[k] {
+			rep.ArtSkippedNoKey(folder, string(k))
+		} else {
+			rep.ArtUnavailable(folder, string(k))
 		}
 	}
 }
