@@ -9,9 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/schmidtw/playbill/internal/artselect"
 	"github.com/schmidtw/playbill/internal/library"
 	"github.com/schmidtw/playbill/internal/nameparse"
 	"github.com/schmidtw/playbill/internal/nfo"
@@ -21,17 +24,25 @@ import (
 	"github.com/schmidtw/playbill/internal/writer"
 )
 
-// resolver turns a parsed folder name into the canonical, rich movie metadata.
-// *tmdb.Client satisfies it; tests inject fakes.
+// preferredLang is the language used to rank artwork. Folder names and metadata
+// in this library are English; a configurable preference is a later concern.
+const preferredLang = "en"
+
+// resolver turns a parsed folder name into the canonical, rich movie metadata
+// and supplies its baseline artwork candidates. *tmdb.Client satisfies it;
+// tests inject fakes.
 type resolver interface {
 	Resolve(tmdb.ResolveRequest) (nfo.Movie, error)
+	Images(id string) ([]artselect.Image, error)
 }
 
 // config holds the resolved run options.
 type config struct {
 	dir      string
 	dryRun   bool
+	force    bool
 	out      io.Writer
+	client   *http.Client
 	resolver resolver
 }
 
@@ -51,6 +62,7 @@ func realMain(args []string, out, errOut io.Writer) int {
 		return 2
 	}
 	cfg.out = out
+	cfg.client = &http.Client{Timeout: 30 * time.Second}
 
 	cfg.resolver, err = newResolver()
 	if err != nil {
@@ -84,6 +96,7 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 	fs.SetOutput(errOut)
 	dir := fs.String("dir", "", "movie library root to enrich (required)")
 	dryRun := fs.Bool("dry-run", false, "report intended writes without modifying the filesystem")
+	force := fs.Bool("force", false, "re-fetch and overwrite existing NFO and artwork files")
 
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -93,7 +106,7 @@ func parseArgs(args []string, errOut io.Writer) (config, error) {
 		return config{}, errMissingDir
 	}
 
-	return config{dir: *dir, dryRun: *dryRun}, nil
+	return config{dir: *dir, dryRun: *dryRun, force: *force}, nil
 }
 
 // run scans the library, writes a rich NFO per matched folder, and prints an
@@ -144,7 +157,7 @@ func processFolder(cfg config, f library.MovieFolder, rep *report.Report) {
 		return
 	}
 
-	res, err := writer.WriteNFO(nfoPath, data, cfg.dryRun)
+	res, err := writer.WriteNFO(nfoPath, data, cfg.force, cfg.dryRun)
 	if err != nil {
 		rep.Errored(f.Name, err.Error())
 		return
@@ -158,6 +171,52 @@ func processFolder(cfg config, f library.MovieFolder, rep *report.Report) {
 	case writer.Planned:
 		rep.Planned(f.Name)
 	}
+
+	downloadArt(cfg, f, movie, rep)
+}
+
+// downloadArt selects the baseline artwork for a resolved movie and downloads
+// one best image per art type into the folder with Kodi naming. It is best-
+// effort: a failure to list or fetch art is recorded and never aborts the run,
+// so missing artwork does not cost the folder its NFO.
+func downloadArt(cfg config, f library.MovieFolder, movie nfo.Movie, rep *report.Report) {
+	id := defaultUniqueID(movie.UniqueIDs, "tmdb")
+	if id == "" {
+		return
+	}
+
+	candidates, err := cfg.resolver.Images(id)
+	if err != nil {
+		rep.Errored(f.Name, "artwork: "+err.Error())
+		return
+	}
+
+	for _, img := range artselect.Select(candidates, preferredLang) {
+		name := f.Name + "-" + string(img.Kind) + imageExt(img.URL)
+		path := filepath.Join(f.Path, name)
+		if _, err := writer.WriteArt(cfg.client, path, img.URL, cfg.force, cfg.dryRun); err != nil {
+			rep.Errored(f.Name, "artwork "+string(img.Kind)+": "+err.Error())
+		}
+	}
+}
+
+// defaultUniqueID returns the value of the unique id of the given type, or "".
+func defaultUniqueID(ids []nfo.UniqueID, typ string) string {
+	for _, id := range ids {
+		if id.Type == typ {
+			return id.Value
+		}
+	}
+	return ""
+}
+
+// imageExt returns the file extension of an image URL (including the dot), used
+// to name the art file. It defaults to ".jpg" when the URL carries none.
+func imageExt(url string) string {
+	if ext := filepath.Ext(url); ext != "" {
+		return ext
+	}
+	return ".jpg"
 }
 
 // existingTMDBID returns the TMDB id recorded in an existing NFO at nfoPath, or
