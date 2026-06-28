@@ -62,8 +62,13 @@ LIBRARY=/path/to/movies` wraps the same invocation.
 API keys are read from the environment so they never leak into shell history or
 `ps` output. Run behavior is controlled by flags:
 
+`--dir` accepts **either** the library root (every `Title (Year)` subfolder that
+contains a video is enriched) **or** a single movie folder (when the directory
+holds the video file directly — handy for enriching or testing one title):
+
 ```sh
-playbill --dir /path/to/movies                 # enrich everything new
+playbill --dir /path/to/movies                 # whole library, enrich everything new
+playbill --dir "/path/to/movies/Brave (2012)"  # just one movie folder
 playbill --dir /path/to/movies --dry-run       # preview without writing
 playbill --dir /path/to/movies --force         # re-fetch and overwrite
 playbill --dir /path/to/movies --json          # machine-readable report
@@ -71,7 +76,7 @@ playbill --dir /path/to/movies --json          # machine-readable report
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--dir` | _(required)_ | movie library root to enrich |
+| `--dir` | _(required)_ | library root, or a single movie folder, to enrich |
 | `--dry-run` | `false` | report intended writes without modifying anything |
 | `--force` | `false` | re-fetch and overwrite existing NFO and artwork |
 | `--art` | `poster,fanart,banner,clearlogo,discart,landscape` | art types to fetch |
