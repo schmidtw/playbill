@@ -81,10 +81,10 @@ type artProvider interface {
 
 // config holds the resolved run options.
 type config struct {
-	dir         string
-	dryRun      bool
-	force       bool
-	json        bool
+	dir    string
+	dryRun bool
+	force  bool
+	json   bool
 	// showVersion is set by --version; realMain prints the build version and
 	// exits without scanning a library.
 	showVersion bool
@@ -188,7 +188,7 @@ func newFanart() artProvider {
 func parseArgs(args []string, errOut io.Writer) (config, error) {
 	fs := flag.NewFlagSet("playbill", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	dir := fs.String("dir", "", "movie library root to enrich (required)")
+	dir := fs.String("dir", "", "library root (enrich every movie folder under it) or a single movie folder (required)")
 	dryRun := fs.Bool("dry-run", false, "report intended writes without modifying the filesystem")
 	force := fs.Bool("force", false, "re-fetch and overwrite existing NFO and artwork files")
 	concurrency := fs.Int("concurrency", defaultConcurrency, "number of folders to process in parallel")

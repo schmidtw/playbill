@@ -50,3 +50,33 @@ func TestScan_MissingRoot(t *testing.T) {
 	_, err := library.Scan(filepath.Join(t.TempDir(), "does-not-exist"))
 	assert.Error(t, err)
 }
+
+func TestScan_SingleMovieFolder(t *testing.T) {
+	parent := t.TempDir()
+	movie := filepath.Join(parent, "Brave (2012)")
+	writeFile(t, filepath.Join(movie, "Brave (2012).m4v"))
+
+	// Pointing -dir directly at a movie folder treats it as a single movie.
+	folders, err := library.Scan(movie)
+	require.NoError(t, err)
+
+	require.Len(t, folders, 1)
+	assert.Equal(t, "Brave (2012)", folders[0].Name)
+	assert.Equal(t, "Brave (2012).m4v", folders[0].VideoFile)
+	assert.Equal(t, movie, folders[0].Path)
+}
+
+func TestScan_SingleMovieFolderIgnoresSubdirs(t *testing.T) {
+	parent := t.TempDir()
+	movie := filepath.Join(parent, "Brave (2012)")
+	writeFile(t, filepath.Join(movie, "Brave (2012).m4v"))
+	// An extras subfolder with its own video must not become a second movie.
+	writeFile(t, filepath.Join(movie, "extras", "deleted-scene.mkv"))
+
+	folders, err := library.Scan(movie)
+	require.NoError(t, err)
+
+	require.Len(t, folders, 1)
+	assert.Equal(t, "Brave (2012)", folders[0].Name)
+	assert.Equal(t, "Brave (2012).m4v", folders[0].VideoFile)
+}
